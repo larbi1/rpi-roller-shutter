@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Waveshare RPi Relay Board (B) — Roller Shutter Web Controller v1.1.0
+Waveshare RPi Relay Board (B) — Roller Shutter Web Controller v1.2.0
 REST API + live HTML dashboard for 4-shutter control on Raspberry Pi 5.
 
 Usage:
@@ -19,7 +19,9 @@ from flask import Flask, jsonify, render_template, request
 
 # ── Config ────────────────────────────────────────────────────────
 SHUTTER_SCRIPT = os.environ.get("SHUTTER_SCRIPT", "/usr/local/bin/shutter_control.sh")
+SHUTTER_HOME   = os.environ.get("SHUTTER_HOME", "/home/akaw/waveshare-shutter")
 STATE_DIR      = "/tmp/shutter_board"
+CONFIG_DIR     = os.path.join(SHUTTER_HOME, "config")
 HOST           = "0.0.0.0"
 PORT           = int(os.environ.get("PORT", 8081))
 
@@ -48,7 +50,7 @@ def _lock(sh: int):
                 break
             except OSError:
                 if time.monotonic() >= deadline:
-                    break  # proceed without lock after timeout
+                    break
                 time.sleep(0.05)
         try:
             yield
@@ -58,13 +60,59 @@ def _lock(sh: int):
             except OSError:
                 pass
 
+# ── Config helpers ─────────────────────────────────────────────────
+
+_CONF_DEFAULTS = {
+    "NAME":      lambda sh: f"SH{sh}",
+    "END_STOPS": lambda _: "yes",
+    "UP_MS":     lambda _: "25000",
+    "DOWN_MS":   lambda _: "25000",
+}
+
+
+def _read_config(sh: int) -> dict:
+    """Parse shN.conf key=value file. Returns defaults for missing keys."""
+    result = {k: fn(sh) for k, fn in _CONF_DEFAULTS.items()}
+    path = os.path.join(CONFIG_DIR, f"sh{sh}.conf")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    result[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    return result
+
+
+def _write_config(sh: int, data: dict) -> None:
+    """Write/update key=value pairs in shN.conf (bash-compatible format)."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    path = os.path.join(CONFIG_DIR, f"sh{sh}.conf")
+    existing: dict = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    existing[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    existing.update(data)
+    with open(path, "w") as fh:
+        for k, v in existing.items():
+            fh.write(f"{k}={v}\n")
+
 # ── Helpers ───────────────────────────────────────────────────────
 
 def _run(args: list[str], timeout: int = 60) -> tuple[bool, str]:
+    env = {**os.environ, "SHUTTER_HOME": SHUTTER_HOME}
     try:
         r = subprocess.run(
             [SHUTTER_SCRIPT] + args,
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, env=env,
         )
         return r.returncode == 0, (r.stdout + r.stderr).strip()
     except subprocess.TimeoutExpired:
@@ -81,10 +129,19 @@ def _read_state(sh: int) -> str:
         return "stopped"
 
 
+def _read_pos(sh: int) -> int:
+    try:
+        with open(os.path.join(STATE_DIR, f"sh{sh}.pos")) as fh:
+            return max(0, min(100, int(fh.read().strip())))
+    except (FileNotFoundError, ValueError):
+        return 50
+
+
 def _all_states() -> dict:
     return {
         str(sh): {
             "state":    _read_state(sh),
+            "position": _read_pos(sh),
             "up_bcm":   RELAY_MAP[sh]["up_bcm"],
             "down_bcm": RELAY_MAP[sh]["down_bcm"],
         }
@@ -94,10 +151,11 @@ def _all_states() -> dict:
 
 def _sh_json(sh: int, ok: bool, msg: str) -> dict:
     return {
-        "shutter": sh,
-        "state":   _read_state(sh),
-        "success": ok,
-        "message": msg,
+        "shutter":  sh,
+        "state":    _read_state(sh),
+        "position": _read_pos(sh),
+        "success":  ok,
+        "message":  msg,
         **RELAY_MAP[sh],
     }
 
@@ -144,11 +202,12 @@ def shutter_stop(sh: int):
 def shutter_open(sh: int):
     if sh not in SHUTTERS:
         return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
-    ms = request.args.get("ms", "30000")
-    if not ms.isdigit() or int(ms) < 1:
+    cfg = _read_config(sh)
+    ms = request.args.get("ms", cfg["UP_MS"])
+    if not str(ms).isdigit() or int(ms) < 1:
         return jsonify({"error": "ms must be a positive integer"}), 400
     with _lock(sh):
-        ok, msg = _run(["open", str(sh), ms], timeout=int(ms) // 1000 + 5)
+        ok, msg = _run(["open", str(sh), str(ms)], timeout=int(ms) // 1000 + 5)
     return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
 
 
@@ -156,12 +215,72 @@ def shutter_open(sh: int):
 def shutter_close(sh: int):
     if sh not in SHUTTERS:
         return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
-    ms = request.args.get("ms", "30000")
-    if not ms.isdigit() or int(ms) < 1:
+    cfg = _read_config(sh)
+    ms = request.args.get("ms", cfg["DOWN_MS"])
+    if not str(ms).isdigit() or int(ms) < 1:
         return jsonify({"error": "ms must be a positive integer"}), 400
     with _lock(sh):
-        ok, msg = _run(["close", str(sh), ms], timeout=int(ms) // 1000 + 5)
+        ok, msg = _run(["close", str(sh), str(ms)], timeout=int(ms) // 1000 + 5)
     return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
+
+
+@app.route("/api/shutter/<int:sh>/calibrate", methods=["POST"])
+def shutter_calibrate(sh: int):
+    if sh not in SHUTTERS:
+        return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
+    cfg = _read_config(sh)
+    total_ms = int(cfg["UP_MS"]) + int(cfg["DOWN_MS"]) + 2000
+    if cfg["END_STOPS"] == "yes":
+        total_ms = int(total_ms * 1.3)
+    timeout = total_ms // 1000 + 10
+    with _lock(sh):
+        ok, msg = _run(["calibrate", str(sh)], timeout=timeout)
+    return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
+
+
+@app.route("/api/shutter/<int:sh>/pos", methods=["POST"])
+def shutter_pos(sh: int):
+    if sh not in SHUTTERS:
+        return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
+    pct = request.args.get("pct", "")
+    if not str(pct).isdigit() or not (0 <= int(pct) <= 100):
+        return jsonify({"error": "pct must be 0–100"}), 400
+    cfg = _read_config(sh)
+    max_ms = max(int(cfg["UP_MS"]), int(cfg["DOWN_MS"]))
+    with _lock(sh):
+        ok, msg = _run(["pos", str(sh), str(pct)], timeout=max_ms // 1000 + 5)
+    return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
+
+
+@app.route("/api/shutter/<int:sh>/setpos", methods=["POST"])
+def shutter_setpos(sh: int):
+    if sh not in SHUTTERS:
+        return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
+    pct = request.args.get("pct", "")
+    if not str(pct).isdigit() or not (0 <= int(pct) <= 100):
+        return jsonify({"error": "pct must be 0–100"}), 400
+    ok, msg = _run(["setpos", str(sh), str(pct)])
+    return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
+
+
+@app.route("/api/shutter/<int:sh>/config", methods=["GET"])
+def shutter_config_get(sh: int):
+    if sh not in SHUTTERS:
+        return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
+    return jsonify({"shutter": sh, "config": _read_config(sh)})
+
+
+@app.route("/api/shutter/<int:sh>/config", methods=["POST"])
+def shutter_config_set(sh: int):
+    if sh not in SHUTTERS:
+        return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
+    data = request.get_json(silent=True) or {}
+    allowed = {"NAME", "END_STOPS", "UP_MS", "DOWN_MS"}
+    filtered = {k: str(v) for k, v in data.items() if k in allowed}
+    if not filtered:
+        return jsonify({"error": "No valid keys. Allowed: NAME, END_STOPS, UP_MS, DOWN_MS"}), 400
+    _write_config(sh, filtered)
+    return jsonify({"shutter": sh, "config": _read_config(sh)})
 
 
 @app.route("/api/all/up", methods=["POST"])
@@ -209,6 +328,21 @@ def all_close():
     with _lock(0):
         for sh in SHUTTERS:
             ok, msg = _run(["close", str(sh), ms], timeout=int(ms) // 1000 + 5)
+            results.append(_sh_json(sh, ok, msg))
+    return jsonify({"shutters": _all_states(), "results": results})
+
+
+@app.route("/api/all/calibrate", methods=["POST"])
+def all_calibrate():
+    results = []
+    with _lock(0):
+        for sh in SHUTTERS:
+            cfg = _read_config(sh)
+            total_ms = int(cfg["UP_MS"]) + int(cfg["DOWN_MS"]) + 2000
+            if cfg["END_STOPS"] == "yes":
+                total_ms = int(total_ms * 1.3)
+            timeout = total_ms // 1000 + 10
+            ok, msg = _run(["calibrate", str(sh)], timeout=timeout)
             results.append(_sh_json(sh, ok, msg))
     return jsonify({"shutters": _all_states(), "results": results})
 

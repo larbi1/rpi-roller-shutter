@@ -1,5 +1,5 @@
 ================================================================================
-  Waveshare RPi Relay Board (B) — Roller Shutter Controller  v1.1.0
+  Waveshare RPi Relay Board (B) — Roller Shutter Controller  v1.2.0
   Raspberry Pi 5 · libgpiod · 4 Shutters · Web + Physical Buttons
 ================================================================================
 
@@ -43,7 +43,18 @@ DEPLOY (on the Raspberry Pi)
     sudo systemctl daemon-reload
     sudo systemctl enable --now shutter-buttons
 
-  Step 6 — Verify:
+  Step 6 — Configure motor travel times (one-time setup):
+    shutter_control.sh config 1 UP_MS=28000 DOWN_MS=26000 NAME=Salon
+    shutter_control.sh config 2 UP_MS=25000 DOWN_MS=25000 NAME=Chambre
+    shutter_control.sh config 3 UP_MS=30000 DOWN_MS=30000 NAME=Bureau
+    shutter_control.sh config 4 UP_MS=22000 DOWN_MS=22000 NAME=Cuisine
+    # For motors WITHOUT end stops (degraded mode):
+    shutter_control.sh config 1 END_STOPS=no
+
+  Step 7 — Calibrate shutters (sets 0% position):
+    shutter_control.sh calibrate all
+
+  Step 8 — Verify:
     shutter_control.sh status
     sudo systemctl status shutter-web
     sudo systemctl status shutter-buttons
@@ -56,6 +67,31 @@ UPDATE (pull latest from GitHub)
   sudo cp shutter_control.sh /usr/local/bin/
   sudo systemctl restart shutter-web
   sudo systemctl restart shutter-buttons
+
+MOTOR TYPES
+-----------
+  END_STOPS=yes  (default — Somfy, Nice, Came, and most branded motors)
+    Motor has electronic or mechanical end stops. The relay stays energized;
+    the motor stops itself when it reaches the limit. Safe for continuous
+    'up'/'down' commands. Calibration uses +20% buffer time to ensure the
+    motor reaches the end stop.
+
+  END_STOPS=no  (degraded mode — bare motors without limits)
+    Motor has no end stops. The relay MUST be cut after UP_MS/DOWN_MS
+    milliseconds or the motor risks damage. Always use 'open'/'close'
+    (timed commands). Never use 'up'/'down' alone indefinitely.
+    Set: shutter_control.sh config 1 END_STOPS=no
+
+POSITION TRACKING
+-----------------
+  Position is tracked by dead-reckoning (0% = fully open, 100% = fully closed).
+  The system measures elapsed time and divides by configured travel time.
+
+  - Run 'calibrate' to establish ground truth after configuration
+  - After a reboot, positions reset to 50% (unknown). Use 'setpos' to restore:
+      shutter_control.sh setpos 1 0    # after manually verifying SH1 is fully open
+  - Use 'pos' to move to a target percentage:
+      shutter_control.sh pos 1 50      # move SH1 to half-open
 
 PHYSICAL BUTTONS — HARDWARE
 -----------------------------
@@ -83,12 +119,21 @@ Button GPIO pin assignment (BCM / header):
   SH3: UP = BCM23 (header pin 16)  DOWN = BCM24 (header pin 18)
   SH4: UP = BCM25 (header pin 22)  DOWN = BCM12 (header pin 32)
 
-Button behaviour:
-  Short press UP   (stopped)  → start moving UP
-  Short press UP   (moving)   → STOP
-  Short press DOWN (stopped)  → start moving DOWN
-  Short press DOWN (moving)   → STOP
-  Long press any   (≥3 s, release to trigger) → ALL STOP (safety action)
+Button modes (set MODE in config/button.conf):
+
+  Mode 1 (default — 2 buttons per shutter):
+    Short press UP   (stopped)  → start moving UP
+    Short press UP   (moving)   → STOP
+    Short press DOWN (stopped)  → start moving DOWN
+    Short press DOWN (moving)   → STOP
+    Long press any   (≥3 s, release to trigger) → ALL STOP (safety action)
+
+  Mode 5 (single-button cycle):
+    Each press advances the cycle: UP → STOP → DOWN → STOP → UP …
+    Both buttons of a shutter trigger the same cycle (can wire just one)
+    Long press ≥3 s still → ALL STOP (safety action)
+    Enable: echo "MODE=5" > ~/waveshare-shutter/config/button.conf
+            sudo systemctl restart shutter-buttons
 
 ⚠  SAFETY: Button wiring (3.3V signal) must be completely separate from
    mains wiring (230V AC). Never route them in the same conduit or connect
@@ -96,21 +141,29 @@ Button behaviour:
 
 BASH CLI USAGE
 --------------
-  shutter_control.sh up    <1-4> [...]      Move shutter(s) UP
-  shutter_control.sh down  <1-4> [...]      Move shutter(s) DOWN
-  shutter_control.sh stop  <1-4 ...|all>    Stop shutter(s) immediately
-  shutter_control.sh open  <1-4> [ms]       Move UP for N ms then stop (default: 30000)
-  shutter_control.sh close <1-4> [ms]       Move DOWN for N ms then stop (default: 30000)
-  shutter_control.sh status                 Show all shutter states
-  shutter_control.sh reset                  Stop all shutters
-  shutter_control.sh help                   Show usage
+  shutter_control.sh up        <1-4> [...]      Move shutter(s) UP (continuous)
+  shutter_control.sh down      <1-4> [...]      Move shutter(s) DOWN (continuous)
+  shutter_control.sh stop      <1-4 ...|all>    Stop shutter(s) immediately
+  shutter_control.sh open      <1-4> [ms]       Move UP for N ms then stop
+  shutter_control.sh close     <1-4> [ms]       Move DOWN for N ms then stop
+  shutter_control.sh calibrate <1-4|all>        Full close then open → pos=0%
+  shutter_control.sh pos       <1-4> <0-100>    Move to position % (requires calibration)
+  shutter_control.sh setpos    <1-4> <0-100>    Force-set position without movement
+  shutter_control.sh config                     Show motor config for all shutters
+  shutter_control.sh config    <1-4> KEY=val    Set config key (END_STOPS/UP_MS/DOWN_MS/NAME)
+  shutter_control.sh status                     Show all shutter states + positions
+  shutter_control.sh reset                      Stop all shutters
+  shutter_control.sh help                       Show usage
 
 Examples:
   shutter_control.sh up 1 3               # Move SH1 and SH3 up simultaneously
   shutter_control.sh down 2 4             # Move SH2 and SH4 down simultaneously
   shutter_control.sh stop all             # Stop all shutters
   shutter_control.sh open 1 25000         # Open SH1 fully (25 seconds)
-  shutter_control.sh close 2              # Close SH2 (30s default)
+  shutter_control.sh close 2              # Close SH2 (uses configured DOWN_MS)
+  shutter_control.sh calibrate all        # Calibrate all 4 shutters
+  shutter_control.sh pos 1 50             # Move SH1 to half-open
+  shutter_control.sh config 1 UP_MS=28000 DOWN_MS=26000 NAME=Salon
   DEBUG=1 shutter_control.sh status       # Verbose debug output
 
 WEB DASHBOARD
@@ -123,23 +176,31 @@ WEB DASHBOARD
 
   The dashboard shows 4 shutter cards with:
   - Animated blind-slat icon (shows up/stop/down state)
-  - Per-shutter ▲ (Up) / ■ (Stop) / ▼ (Down) buttons
-  - Global "All Up / All Stop / All Down" buttons
+  - Position bar (0–100% fill, updates after stop)
+  - Per-shutter ▲ (Up) / ■ (Stop) / ▼ (Down) / ⟳ (Calibrate) buttons
+  - Settings panel (⚙ icon): motor name, end stops, travel times, set position
+  - Global "All Up / All Stop / All Down / ⟳ Cal All" buttons
   - Auto-refresh every 3 seconds
 
 REST API
 --------
-  GET  /api/status                        All shutter states (JSON)
-  POST /api/shutter/{1-4}/up              Start moving up
-  POST /api/shutter/{1-4}/down            Start moving down
-  POST /api/shutter/{1-4}/stop            Stop immediately
-  POST /api/shutter/{1-4}/open?ms=25000   Timed open (ms optional)
-  POST /api/shutter/{1-4}/close?ms=25000  Timed close (ms optional)
-  POST /api/all/up                        All shutters up
-  POST /api/all/down                      All shutters down
-  POST /api/all/stop                      Stop all shutters
-  POST /api/all/open?ms=25000             Timed open all
-  POST /api/all/close?ms=25000            Timed close all
+  GET  /api/status                          All shutter states + positions (JSON)
+  POST /api/shutter/{1-4}/up               Start moving up
+  POST /api/shutter/{1-4}/down             Start moving down
+  POST /api/shutter/{1-4}/stop             Stop immediately
+  POST /api/shutter/{1-4}/open?ms=25000    Timed open (ms optional, default=UP_MS)
+  POST /api/shutter/{1-4}/close?ms=25000   Timed close (ms optional, default=DOWN_MS)
+  POST /api/shutter/{1-4}/calibrate        Full close then open → position = 0%
+  POST /api/shutter/{1-4}/pos?pct=50       Move to position % (0=open, 100=closed)
+  POST /api/shutter/{1-4}/setpos?pct=50    Force-set position without movement
+  GET  /api/shutter/{1-4}/config           Get motor config (JSON)
+  POST /api/shutter/{1-4}/config           Set config (JSON body: NAME/END_STOPS/UP_MS/DOWN_MS)
+  POST /api/all/up                         All shutters up
+  POST /api/all/down                       All shutters down
+  POST /api/all/stop                       Stop all shutters
+  POST /api/all/open?ms=25000              Timed open all
+  POST /api/all/close?ms=25000             Timed close all
+  POST /api/all/calibrate                  Calibrate all shutters sequentially
 
 SAFETY
 ------
@@ -147,7 +208,21 @@ SAFETY
   - Cross-process locking: lock files in /tmp/shutter_board/ prevent web server
     and button daemon from commanding the same shutter at the exact same moment
   - State is tracked in /tmp/shutter_board/shN.state (lost on reboot — safe default)
+  - Position tracked in /tmp/shutter_board/shN.pos (lost on reboot — use setpos to restore)
   - Relays de-energised at boot — shutters stay at last physical position
+
+CALIBRATION
+-----------
+  Calibration is required once after configuring motor travel times, and again
+  if the shutter is manually repositioned (e.g. power cut during movement).
+
+  What it does:
+    1. Move DOWN for configured DOWN_MS (×1.2 if END_STOPS=yes) → pos = 100%
+    2. Wait 1 second
+    3. Move UP for configured UP_MS (×1.2 if END_STOPS=yes) → pos = 0%
+
+  After calibration, 'pos' commands will be accurate to ±2–5% depending on
+  motor consistency and travel time accuracy.
 
 TROUBLESHOOTING
 ---------------
@@ -169,6 +244,10 @@ TROUBLESHOOTING
     shutter_control.sh stop all        # stop all daemons
     pkill -f gpioset                   # force kill if stuck
 
+  Position inaccurate:
+    shutter_control.sh calibrate all   # re-calibrate
+    # Or manually set: shutter_control.sh setpos 1 0  (if you know it's fully open)
+
   Button wiring check (without Pi):
     Use a multimeter in continuity mode across the two terminals of
     each button contact — should show open when released, closed when pressed.
@@ -178,5 +257,6 @@ NOTES
   - Relay board uses active-low logic: GPIO LOW = relay ON
   - libgpiod required (NOT sysfs, NOT RPi.GPIO)
   - python3-gpiod v1.x and v2.x both supported (auto-detected at runtime)
+  - SHUTTER_HOME env var controls config directory location (default: /home/akaw/waveshare-shutter)
   - See CLAUDE.md for AI assistant context and architecture details
 ================================================================================

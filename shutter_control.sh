@@ -1,7 +1,7 @@
 #!/bin/bash
 ###################################################################
 ##   Waveshare RPi Relay Board (B) — Roller Shutter Controller  ##
-##   v1.1.0  ·  Raspberry Pi 5 · libgpiod v2.x / v1.x          ##
+##   v1.2.0  ·  Raspberry Pi 5 · libgpiod v2.x / v1.x          ##
 ###################################################################
 ##  4 shutters, 2 relays each (UP + DOWN), active-low            ##
 ##  SH1: UP=CH1/BCM5   DOWN=CH2/BCM6                            ##
@@ -14,9 +14,11 @@
 set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────
-readonly VERSION="1.1.0"
+readonly VERSION="1.2.0"
 readonly SCRIPT_NAME="$(basename "$0")"
+readonly SHUTTER_HOME="${SHUTTER_HOME:-/home/akaw/waveshare-shutter}"
 readonly STATE_DIR="/tmp/shutter_board"
+readonly CONFIG_DIR="${SHUTTER_HOME}/config"
 readonly LOG_FILE="/tmp/shutter_board.log"
 readonly MAX_LOG_KB=2048
 
@@ -28,12 +30,8 @@ readonly -a SHUTTERS=(1 2 3 4)
 readonly GPIO_ON=0    # active-low: GPIO LOW  = relay energized
 readonly GPIO_OFF=1   # active-low: GPIO HIGH = relay released
 
-# Motor protection: wait this long between releasing one direction
-# and engaging the opposite (lets motor coil discharge)
-readonly CHANGE_DELAY="0.5"
-
-# Default full-travel duration for open/close commands (ms)
-readonly DEFAULT_TRAVEL_MS=30000
+readonly CHANGE_DELAY="0.5"           # seconds between direction reversal
+readonly DEFAULT_TRAVEL_MS=25000      # fallback travel time if not configured
 
 # ── Colors ───────────────────────────────────────────────────────
 if [[ -t 1 && "${TERM:-dumb}" != "dumb" ]]; then
@@ -55,6 +53,32 @@ warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*" >&2; _log WARN  "$*"; }
 error() { echo -e "${RED}[ERROR]${RESET} $*" >&2; _log ERROR "$*"; }
 ok()    { echo -e "${GREEN}[OK]${RESET}    $*"; _log OK    "$*"; }
 die()   { error "$*"; exit 1; }
+
+# ── Config helpers ────────────────────────────────────────────────
+# Read key from shN.conf, return default if absent
+_conf_get() {
+    local sh=$1 key=$2 default=${3:-""}
+    local conf="${CONFIG_DIR}/sh${sh}.conf"
+    if [[ -f "$conf" ]]; then
+        local val
+        val=$(grep -m1 "^${key}=" "$conf" 2>/dev/null | cut -d= -f2- || true)
+        echo "${val:-$default}"
+    else
+        echo "$default"
+    fi
+}
+
+# Write or update key=value in shN.conf
+_conf_set() {
+    local sh=$1 key=$2 value=$3
+    local conf="${CONFIG_DIR}/sh${sh}.conf"
+    mkdir -p "$CONFIG_DIR"
+    if [[ -f "$conf" ]] && grep -q "^${key}=" "$conf" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$conf"
+    else
+        echo "${key}=${value}" >> "$conf"
+    fi
+}
 
 # ── Dependencies ─────────────────────────────────────────────────
 check_deps() {
@@ -117,7 +141,7 @@ _gpioset() {
     fi
 }
 
-# ── Process finder (word-boundary pin match, avoids PID collisions) ──
+# ── Process finder (word-boundary pin match) ──────────────────────
 _find_gpioset_pid() {
     local pin=$1
     ps ax -o pid,args 2>/dev/null \
@@ -126,18 +150,53 @@ _find_gpioset_pid() {
 }
 
 # ── PID / state helpers ───────────────────────────────────────────
-_pidfile()      { echo "${STATE_DIR}/sh${1}_${2}.pid"; }   # sh=shutter, dir=up|down
 _statefile()    { echo "${STATE_DIR}/sh${1}.state"; }
+_posfile()      { echo "${STATE_DIR}/sh${1}.pos"; }
+_movefile()     { echo "${STATE_DIR}/sh${1}.move_start"; }
 _save_state()   { echo "$2" > "$(_statefile "$1")"; }
 _read_state()   {
     local sf; sf=$(_statefile "$1")
     [[ -f "$sf" ]] && cat "$sf" || echo "stopped"
 }
+_read_pos() {
+    local pf; pf=$(_posfile "$1")
+    [[ -f "$pf" ]] && cat "$pf" || echo "50"
+}
+_save_pos()     { echo "$2" > "$(_posfile "$1")"; }
+_now_ms()       { date +%s%3N; }
+_record_move_start() { _now_ms > "$(_movefile "$1")"; }
+
+# ── Position update on movement stop ─────────────────────────────
+_update_pos_on_stop() {
+    local sh=$1
+    local direction; direction=$(_read_state "$sh")
+    local mf; mf=$(_movefile "$sh")
+    [[ -f "$mf" ]] || return 0
+
+    local start_ms; start_ms=$(cat "$mf")
+    local elapsed=$(( $(_now_ms) - start_ms ))
+    local cur; cur=$(_read_pos "$sh")
+    local new_pos
+
+    if [[ "$direction" == "up" ]]; then
+        local up_ms; up_ms=$(_conf_get "$sh" UP_MS "$DEFAULT_TRAVEL_MS")
+        new_pos=$(( cur - (elapsed * 100 / up_ms) ))
+    elif [[ "$direction" == "down" ]]; then
+        local down_ms; down_ms=$(_conf_get "$sh" DOWN_MS "$DEFAULT_TRAVEL_MS")
+        new_pos=$(( cur + (elapsed * 100 / down_ms) ))
+    else
+        rm -f "$mf"; return 0
+    fi
+
+    (( new_pos < 0 ))   && new_pos=0
+    (( new_pos > 100 )) && new_pos=100
+    _save_pos "$sh" "$new_pos"
+    rm -f "$mf"
+}
 
 # ── Low-level GPIO pin control ────────────────────────────────────
 _pin_release() {
     local pin=$1
-    # Kill via any stray daemon holding this pin
     local pid; pid=$(_find_gpioset_pid "$pin")
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
     sleep 0.05
@@ -147,7 +206,7 @@ _pin_on() {
     local pin=$1
     local err_tmp; err_tmp=$(mktemp)
 
-    _pin_release "$pin"   # release first (exclusive ownership)
+    _pin_release "$pin"
 
     if (( GPIOD_MAJOR >= 2 )); then
         _gpioset --daemonize "${pin}=${GPIO_ON}" 2>"$err_tmp" || true
@@ -171,66 +230,210 @@ _pin_on() {
 
 # ── Shutter-level operations ──────────────────────────────────────
 
-# Stop: release both relays
+# Stop: update position then release both relays
 _shutter_stop() {
     local sh=$1
+    _update_pos_on_stop "$sh"
     _pin_release "${UP_PINS[$sh]}"
     _pin_release "${DOWN_PINS[$sh]}"
     _save_state "$sh" "stopped"
 }
 
-# Move UP: release DOWN, delay, activate UP
+# Move UP: interlock DOWN → record start → activate UP
 _shutter_up() {
     local sh=$1
     local current; current=$(_read_state "$sh")
 
-    # If moving down, stop and wait before reversing
     if [[ "$current" == "down" ]]; then
+        _update_pos_on_stop "$sh"    # record position before reversing
         _pin_release "${DOWN_PINS[$sh]}"
         sleep "$CHANGE_DELAY"
     fi
 
     _pin_on "${UP_PINS[$sh]}" || return 1
+    _record_move_start "$sh"
     _save_state "$sh" "up"
     ok "SH${sh}  UP  (BCM${UP_PINS[$sh]} ON / BCM${DOWN_PINS[$sh]} OFF)"
 }
 
-# Move DOWN: release UP, delay, activate DOWN
+# Move DOWN: interlock UP → record start → activate DOWN
 _shutter_down() {
     local sh=$1
     local current; current=$(_read_state "$sh")
 
-    # If moving up, stop and wait before reversing
     if [[ "$current" == "up" ]]; then
+        _update_pos_on_stop "$sh"    # record position before reversing
         _pin_release "${UP_PINS[$sh]}"
         sleep "$CHANGE_DELAY"
     fi
 
     _pin_on "${DOWN_PINS[$sh]}" || return 1
+    _record_move_start "$sh"
     _save_state "$sh" "down"
     ok "SH${sh}  DOWN  (BCM${DOWN_PINS[$sh]} ON / BCM${UP_PINS[$sh]} OFF)"
 }
 
-# Open: move UP for duration then stop
+# Open (UP for duration then stop); uses per-shutter UP_MS as default
 shutter_open() {
-    local sh=$1 ms=${2:-$DEFAULT_TRAVEL_MS}
+    local sh=$1
+    local up_ms; up_ms=$(_conf_get "$sh" UP_MS "$DEFAULT_TRAVEL_MS")
+    local ms=${2:-$up_ms}
     [[ "$ms" =~ ^[0-9]+$ ]] || die "Duration must be a positive integer (ms). Got: $ms"
     info "SH${sh}  opening  (${ms}ms) ..."
     _shutter_up "$sh" || return 1
     sleep "$(awk "BEGIN{printf \"%.3f\", $ms/1000}")"
     _shutter_stop "$sh"
-    ok "SH${sh}  open complete"
+    # After full-travel open, force position to 0% (fully open)
+    if (( ms >= up_ms )); then
+        _save_pos "$sh" 0
+    fi
+    ok "SH${sh}  open complete  (pos=$(( $(_read_pos "$sh") ))%)"
 }
 
-# Close: move DOWN for duration then stop
+# Close (DOWN for duration then stop); uses per-shutter DOWN_MS as default
 shutter_close() {
-    local sh=$1 ms=${2:-$DEFAULT_TRAVEL_MS}
+    local sh=$1
+    local down_ms; down_ms=$(_conf_get "$sh" DOWN_MS "$DEFAULT_TRAVEL_MS")
+    local ms=${2:-$down_ms}
     [[ "$ms" =~ ^[0-9]+$ ]] || die "Duration must be a positive integer (ms). Got: $ms"
     info "SH${sh}  closing  (${ms}ms) ..."
     _shutter_down "$sh" || return 1
     sleep "$(awk "BEGIN{printf \"%.3f\", $ms/1000}")"
     _shutter_stop "$sh"
-    ok "SH${sh}  close complete"
+    # After full-travel close, force position to 100% (fully closed)
+    if (( ms >= down_ms )); then
+        _save_pos "$sh" 100
+    fi
+    ok "SH${sh}  close complete  (pos=$(( $(_read_pos "$sh") ))%)"
+}
+
+# ── Calibration ───────────────────────────────────────────────────
+# Full DOWN then full UP to establish known position (0% = fully open).
+# Motors with end stops: run with 20% buffer — motor stops itself.
+# Degraded mode (no end stops): run for exactly down_ms / up_ms.
+shutter_calibrate() {
+    local sh=$1
+    local end_stops; end_stops=$(_conf_get "$sh" END_STOPS "yes")
+    local down_ms; down_ms=$(_conf_get "$sh" DOWN_MS "$DEFAULT_TRAVEL_MS")
+    local up_ms; up_ms=$(_conf_get "$sh" UP_MS "$DEFAULT_TRAVEL_MS")
+    local name; name=$(_conf_get "$sh" NAME "SH${sh}")
+    local wait_ms
+
+    info "SH${sh} (${name})  CALIBRATE — phase 1: closing fully..."
+
+    _shutter_down "$sh" || return 1
+
+    if [[ "$end_stops" == "yes" ]]; then
+        wait_ms=$(( down_ms * 12 / 10 ))   # 20% extra: motor stops at end stop
+    else
+        wait_ms=$down_ms
+    fi
+    sleep "$(awk "BEGIN{printf \"%.3f\", $wait_ms/1000}")"
+
+    # Stop without position tracking (we're forcing to 100%)
+    _pin_release "${DOWN_PINS[$sh]}"
+    rm -f "$(_movefile "$sh")"
+    _save_pos "$sh" 100
+    _save_state "$sh" "stopped"
+    ok "SH${sh}  fully closed (100%)"
+
+    sleep 1
+
+    info "SH${sh} (${name})  CALIBRATE — phase 2: opening fully..."
+
+    _pin_on "${UP_PINS[$sh]}" || return 1
+    _record_move_start "$sh"
+    _save_state "$sh" "up"
+
+    if [[ "$end_stops" == "yes" ]]; then
+        wait_ms=$(( up_ms * 12 / 10 ))
+    else
+        wait_ms=$up_ms
+    fi
+    sleep "$(awk "BEGIN{printf \"%.3f\", $wait_ms/1000}")"
+
+    _pin_release "${UP_PINS[$sh]}"
+    rm -f "$(_movefile "$sh")"
+    _save_pos "$sh" 0
+    _save_state "$sh" "stopped"
+    ok "SH${sh}  fully open (0%) — calibration complete"
+}
+
+# ── Position command ──────────────────────────────────────────────
+# Move shutter to target position % (0=open, 100=closed).
+# Uses dead-reckoning from configured travel times.
+shutter_to_pos() {
+    local sh=$1 target=$2
+    [[ "$target" =~ ^[0-9]+$ ]] && (( target <= 100 )) || die "Position must be 0–100. Got: $target"
+
+    local current; current=$(_read_pos "$sh")
+    local diff=$(( target - current ))
+
+    if (( diff == 0 )); then
+        info "SH${sh}  already at ${target}%"; return 0
+    elif (( diff > 0 )); then
+        # Closing (going down)
+        local down_ms; down_ms=$(_conf_get "$sh" DOWN_MS "$DEFAULT_TRAVEL_MS")
+        local travel=$(( diff * down_ms / 100 ))
+        (( travel < 200 )) && { info "SH${sh}  delta too small (${travel}ms), skipping"; return 0; }
+        info "SH${sh}  → ${target}%  (closing ${diff}%, ${travel}ms)..."
+        _shutter_down "$sh" || return 1
+        sleep "$(awk "BEGIN{printf \"%.3f\", $travel/1000}")"
+        _shutter_stop "$sh"
+        _save_pos "$sh" "$target"
+    else
+        # Opening (going up)
+        local up_ms; up_ms=$(_conf_get "$sh" UP_MS "$DEFAULT_TRAVEL_MS")
+        local travel=$(( (-diff) * up_ms / 100 ))
+        (( travel < 200 )) && { info "SH${sh}  delta too small (${travel}ms), skipping"; return 0; }
+        info "SH${sh}  → ${target}%  (opening ${#diff}%, ${travel}ms)..."
+        _shutter_up "$sh" || return 1
+        sleep "$(awk "BEGIN{printf \"%.3f\", $travel/1000}")"
+        _shutter_stop "$sh"
+        _save_pos "$sh" "$target"
+    fi
+    ok "SH${sh}  position reached: ${target}%"
+}
+
+# Force set position without any movement (manual override)
+shutter_setpos() {
+    local sh=$1 pct=$2
+    [[ "$pct" =~ ^[0-9]+$ ]] && (( pct <= 100 )) || die "Position must be 0–100. Got: $pct"
+    _save_pos "$sh" "$pct"
+    ok "SH${sh}  position set to ${pct}% (no movement)"
+}
+
+# ── Config command ────────────────────────────────────────────────
+shutter_config_show() {
+    echo ""
+    echo "${BOLD}Shutter Configuration  (config dir: ${CONFIG_DIR})${RESET}"
+    echo "  ────────────────────────────────────────────────────────────────"
+    printf "  %-6s  %-10s  %-12s  %-12s  %-8s  %s\n" \
+           "SH" "END_STOPS" "UP_MS" "DOWN_MS" "POS%" "NAME"
+    echo "  ────────────────────────────────────────────────────────────────"
+    for sh in "${SHUTTERS[@]}"; do
+        local end_stops; end_stops=$(_conf_get "$sh" END_STOPS "yes")
+        local up_ms;     up_ms=$(_conf_get "$sh" UP_MS "$DEFAULT_TRAVEL_MS")
+        local down_ms;   down_ms=$(_conf_get "$sh" DOWN_MS "$DEFAULT_TRAVEL_MS")
+        local name;      name=$(_conf_get "$sh" NAME "SH${sh}")
+        local pos;       pos=$(_read_pos "$sh")
+        printf "  SH%-4d  %-10s  %-12s  %-12s  %-8s  %s\n" \
+               "$sh" "$end_stops" "${up_ms}ms" "${down_ms}ms" "${pos}%" "$name"
+    done
+    echo "  ────────────────────────────────────────────────────────────────"
+    echo ""
+}
+
+shutter_config_set() {
+    local sh=$1; shift
+    _validate_shutter "$sh"
+    for kv in "$@"; do
+        [[ "$kv" == *"="* ]] || die "Expected KEY=value, got: $kv"
+        local key="${kv%%=*}"
+        local val="${kv#*=}"
+        _conf_set "$sh" "$key" "$val"
+        ok "SH${sh}  ${key}=${val}"
+    done
 }
 
 # ── Status display ────────────────────────────────────────────────
@@ -238,15 +441,18 @@ shutter_status() {
     echo ""
     echo "${BOLD}Waveshare RPi Relay Board (B) — Roller Shutter Controller  v${VERSION}${RESET}"
     echo "  Chip: ${GPIO_CHIP}   libgpiod v${GPIOD_MAJOR}.x"
-    echo "  ─────────────────────────────────────────────────────────"
-    printf "  %-6s  %-10s  %-10s  %-8s  %s\n" "SHUTTER" "UP pin" "DOWN pin" "STATE" "DAEMON"
-    echo "  ─────────────────────────────────────────────────────────"
+    echo "  ───────────────────────────────────────────────────────────────────"
+    printf "  %-6s  %-10s  %-10s  %-6s  %-10s  %-9s  %s\n" \
+           "SH" "UP pin" "DOWN pin" "POS%" "STATE" "END_STOPS" "DAEMON"
+    echo "  ───────────────────────────────────────────────────────────────────"
 
     for sh in "${SHUTTERS[@]}"; do
         local up_pin=${UP_PINS[$sh]} down_pin=${DOWN_PINS[$sh]}
         local state; state=$(_read_state "$sh")
+        local pos;   pos=$(_read_pos "$sh")
         local up_pid; up_pid=$(_find_gpioset_pid "$up_pin")
         local down_pid; down_pid=$(_find_gpioset_pid "$down_pin")
+        local end_stops; end_stops=$(_conf_get "$sh" END_STOPS "yes")
 
         local daemon_info="stopped"
         [[ -n "$up_pid"   ]] && daemon_info="UP PID ${up_pid}"
@@ -256,11 +462,13 @@ shutter_status() {
         [[ "$state" == "up"   ]] && color="$GREEN"
         [[ "$state" == "down" ]] && color="$CYAN"
 
-        printf "  SH%-4d  BCM %-6d  BCM %-6d  %b%-8s%b  %s\n" \
-            "$sh" "$up_pin" "$down_pin" "$color" "${state^^}" "$RESET" "$daemon_info"
+        printf "  SH%-4d  BCM %-6d  BCM %-6d  %-6s  %b%-10s%b  %-9s  %s\n" \
+            "$sh" "$up_pin" "$down_pin" "${pos}%" \
+            "$color" "${state^^}" "$RESET" \
+            "$end_stops" "$daemon_info"
     done
 
-    echo "  ─────────────────────────────────────────────────────────"
+    echo "  ───────────────────────────────────────────────────────────────────"
     echo ""
 }
 
@@ -279,15 +487,30 @@ Raspberry Pi 5 · libgpiod · 4 shutters · active-low
 ${BOLD}USAGE${RESET}
   ${SCRIPT_NAME} <command> [shutter ...] [options]
 
-${BOLD}COMMANDS${RESET}
-  up     <1-4 ...>              Start moving shutter(s) UP
-  down   <1-4 ...>              Start moving shutter(s) DOWN
-  stop   <1-4 ...| all>         Stop shutter(s) (both relays off)
-  open   <1-4> [ms]             Move UP for duration then stop  (default: ${DEFAULT_TRAVEL_MS}ms)
-  close  <1-4> [ms]             Move DOWN for duration then stop (default: ${DEFAULT_TRAVEL_MS}ms)
-  status                        Show all shutter states
-  reset                         Stop all shutters safely
-  help                          Show this message
+${BOLD}RELAY COMMANDS${RESET}
+  up        <1-4 ...>              Start moving UP (motor stops at end stop if equipped)
+  down      <1-4 ...>              Start moving DOWN
+  stop      <1-4 ...| all>         Stop immediately (both relays off)
+  open      <1-4> [ms]             Move UP for duration then stop  (default: per-shutter UP_MS)
+  close     <1-4> [ms]             Move DOWN for duration then stop (default: per-shutter DOWN_MS)
+
+${BOLD}POSITION COMMANDS${RESET}
+  calibrate <1-4| all>             Full close then full open — establishes 0% position
+  pos       <1-4> <0-100>          Move to position % (requires configured travel times)
+  setpos    <1-4> <0-100>          Force-set position without movement (manual override)
+
+${BOLD}CONFIG / INFO${RESET}
+  config                           Show per-shutter motor configuration table
+  config    <1-4> KEY=val ...      Set config keys (END_STOPS, UP_MS, DOWN_MS, NAME)
+  status                           Show all shutter states + positions
+  reset                            Stop all shutters safely
+  help                             Show this message
+
+${BOLD}MOTOR TYPES${RESET}
+  END_STOPS=yes  (Somfy, Nice, etc.) — relay stays on; motor stops at mechanical/electronic end stop
+                  Use 'up'/'down' for continuous; 'open'/'close' for timed with auto-stop
+  END_STOPS=no   (Degraded mode)     — relay MUST be stopped after UP_MS/DOWN_MS or motor is damaged
+                  Always use 'open'/'close'; never use 'up'/'down' indefinitely
 
 ${BOLD}SHUTTER → RELAY MAPPING${RESET}
   SH1: UP=CH1/BCM5   DOWN=CH2/BCM6
@@ -296,16 +519,19 @@ ${BOLD}SHUTTER → RELAY MAPPING${RESET}
   SH4: UP=CH7/BCM21  DOWN=CH8/BCM26
 
 ${BOLD}EXAMPLES${RESET}
-  ${SCRIPT_NAME} up 1 3              # Move SH1 and SH3 up
-  ${SCRIPT_NAME} down 2 4            # Move SH2 and SH4 down
-  ${SCRIPT_NAME} stop all            # Stop all shutters
-  ${SCRIPT_NAME} open 1 25000        # Open SH1 in 25 seconds
-  ${SCRIPT_NAME} close 2             # Close SH2 (${DEFAULT_TRAVEL_MS}ms default)
-  ${SCRIPT_NAME} status              # Show current states
+  ${SCRIPT_NAME} calibrate all           # Calibrate all 4 shutters (sets 0% position)
+  ${SCRIPT_NAME} pos 1 50               # Move SH1 to 50% (half-open)
+  ${SCRIPT_NAME} config 1 UP_MS=28000 DOWN_MS=26000 END_STOPS=yes
+  ${SCRIPT_NAME} config 2 END_STOPS=no UP_MS=20000  # Degraded mode (no end stops)
+  ${SCRIPT_NAME} up 1 3                 # Move SH1 and SH3 up
+  ${SCRIPT_NAME} open 1 25000           # Open SH1 for 25s then stop
+  ${SCRIPT_NAME} stop all               # Stop all shutters
+  ${SCRIPT_NAME} setpos 1 0             # Force position to 0% after manual full-open
+  DEBUG=1 ${SCRIPT_NAME} status
 
 ${BOLD}SAFETY${RESET}
-  UP and DOWN relays are interlocked — activating one direction
-  always releases the opposite first, with a ${CHANGE_DELAY}s delay.
+  UP and DOWN relays are interlocked — activating one direction always
+  releases the opposite first, with a ${CHANGE_DELAY}s delay.
 
 ${BOLD}DEBUG${RESET}
   DEBUG=1 ${SCRIPT_NAME} status
@@ -322,6 +548,7 @@ init() {
     detect_gpio_chip
     if [[ "${DEBUG:-0}" == "1" ]]; then
         info "chip=${GPIO_CHIP}  libgpiod_v${GPIOD_MAJOR}  hold=${GPIOD_V2_HOLD:-signal(v1)}"
+        info "SHUTTER_HOME=${SHUTTER_HOME}  CONFIG_DIR=${CONFIG_DIR}"
     fi
 }
 
@@ -333,9 +560,29 @@ main() {
 
     case "$cmd" in
         help|--help|-h) print_help; exit 0 ;;
-        up|down|stop|open|close|status|reset) ;;
+        up|down|stop|open|close|status|reset|calibrate|pos|setpos|config) ;;
         *) error "Unknown command: '${cmd}'"; print_help; exit 1 ;;
     esac
+
+    # config show doesn't need GPIO hardware
+    if [[ "$cmd" == "config" && $# -eq 0 ]]; then
+        mkdir -p "$STATE_DIR"
+        shutter_config_show
+        exit 0
+    fi
+
+    # config set doesn't need GPIO
+    if [[ "$cmd" == "config" && $# -ge 1 ]]; then
+        local sh=$1; shift
+        _validate_shutter "$sh"
+        if [[ $# -eq 0 ]]; then
+            mkdir -p "$STATE_DIR"
+            shutter_config_show
+            exit 0
+        fi
+        shutter_config_set "$sh" "$@"
+        exit 0
+    fi
 
     init
 
@@ -360,12 +607,31 @@ main() {
         open)
             [[ -n "${1:-}" ]] || die "Missing shutter. Usage: ${SCRIPT_NAME} open <1-4> [ms]"
             _validate_shutter "$1"
-            shutter_open "$1" "${2:-$DEFAULT_TRAVEL_MS}"
+            shutter_open "$1" "${2:-}"
             ;;
         close)
             [[ -n "${1:-}" ]] || die "Missing shutter. Usage: ${SCRIPT_NAME} close <1-4> [ms]"
             _validate_shutter "$1"
-            shutter_close "$1" "${2:-$DEFAULT_TRAVEL_MS}"
+            shutter_close "$1" "${2:-}"
+            ;;
+        calibrate)
+            if [[ "${1:-}" == "all" || $# -eq 0 ]]; then
+                info "Calibrating all shutters..."
+                for sh in "${SHUTTERS[@]}"; do shutter_calibrate "$sh"; sleep 2; done
+                ok "All shutters calibrated."
+            else
+                for sh in "$@"; do _validate_shutter "$sh"; shutter_calibrate "$sh"; done
+            fi
+            ;;
+        pos)
+            [[ $# -ge 2 ]] || die "Usage: ${SCRIPT_NAME} pos <1-4> <0-100>"
+            _validate_shutter "$1"
+            shutter_to_pos "$1" "$2"
+            ;;
+        setpos)
+            [[ $# -ge 2 ]] || die "Usage: ${SCRIPT_NAME} setpos <1-4> <0-100>"
+            _validate_shutter "$1"
+            shutter_setpos "$1" "$2"
             ;;
         status) shutter_status ;;
         reset)

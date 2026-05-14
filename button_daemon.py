@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-button_daemon.py — Roller shutter physical button controller  v1.1.0
+button_daemon.py — Roller shutter physical button controller  v1.2.0
 Event-driven GPIO button monitor using python3-gpiod.
 Supports gpiod v1.x (select-based) and v2.x (wait_edge_events).
 
@@ -17,6 +17,10 @@ Pin assignment (BCM → header pin):
   SH2: UP=BCM27(pin13) DOWN=BCM22(pin15)
   SH3: UP=BCM23(pin16) DOWN=BCM24(pin18)
   SH4: UP=BCM25(pin22) DOWN=BCM12(pin32)
+
+Button modes (set MODE in config/button.conf):
+  Mode 1 (default): 2 buttons/shutter — UP toggles up/stop, DOWN toggles down/stop
+  Mode 5:           single-button cycle — each press advances: UP→STOP→DOWN→STOP→...
 """
 
 import fcntl
@@ -30,6 +34,7 @@ import time
 
 # ── Configuration ─────────────────────────────────────────────────
 SHUTTER_SCRIPT = os.environ.get("SHUTTER_SCRIPT", "/usr/local/bin/shutter_control.sh")
+SHUTTER_HOME   = os.environ.get("SHUTTER_HOME", "/home/akaw/waveshare-shutter")
 STATE_DIR      = "/tmp/shutter_board"
 LOG_FILE       = "/tmp/shutter_board_buttons.log"
 MAX_LOG_BYTES  = 1_048_576  # 1 MB
@@ -48,6 +53,9 @@ BUTTON_PINS: dict[int, tuple[int, str]] = {
     25: (4, "up"),
     12: (4, "down"),
 }
+
+# Mode 5 per-shutter cycle state: 0=ready_up, 1=moving_up, 2=ready_down, 3=moving_down
+_m5_state: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
 
 # ── Logging ───────────────────────────────────────────────────────
 def _setup_logging() -> None:
@@ -82,7 +90,7 @@ def _unlock(fd) -> None:
         except OSError:
             pass
 
-# ── State reader ──────────────────────────────────────────────────
+# ── State / config readers ─────────────────────────────────────────
 def _read_state(sh: int) -> str:
     try:
         with open(os.path.join(STATE_DIR, f"sh{sh}.state")) as f:
@@ -90,12 +98,29 @@ def _read_state(sh: int) -> str:
     except FileNotFoundError:
         return "stopped"
 
+
+def _get_button_mode() -> int:
+    """Read MODE from config/button.conf. Returns 1 (default) or 5."""
+    path = os.path.join(SHUTTER_HOME, "config", "button.conf")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("MODE="):
+                    val = line.split("=", 1)[1].strip()
+                    if val in ("1", "5"):
+                        return int(val)
+    except FileNotFoundError:
+        pass
+    return 1
+
 # ── Command runner ────────────────────────────────────────────────
 def _run(args: list) -> None:
+    env = {**os.environ, "SHUTTER_HOME": SHUTTER_HOME}
     try:
         r = subprocess.run(
             [SHUTTER_SCRIPT] + [str(a) for a in args],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, env=env,
         )
         if r.returncode != 0:
             log.warning("rc=%d for %s: %s", r.returncode, args,
@@ -132,7 +157,47 @@ def _detect_chip() -> str:
     log.info("chip: %s (fallback, %d lines)", best, best_n)
     return f"/dev/{best}"
 
-# ── Button release handler ────────────────────────────────────────
+# ── Button action handlers ────────────────────────────────────────
+
+def _handle_mode1(sh: int, direction: str, duration_ms: float) -> None:
+    """Mode 1: toggle start/stop per direction."""
+    state = _read_state(sh)
+    action = direction if state == "stopped" else "stop"
+    log.info("MODE1 pin sh=%d dir=%s state=%s → %s (%.0f ms)",
+             sh, direction, state, action, duration_ms)
+    fd = _try_lock(sh)
+    if fd is None:
+        log.warning("sh%d locked, dropping %s", sh, action)
+        return
+    try:
+        _run([action, str(sh)])
+    finally:
+        _unlock(fd)
+
+
+def _handle_mode5(sh: int, duration_ms: float) -> None:
+    """Mode 5: single-button cycle UP→STOP→DOWN→STOP→..."""
+    state = _m5_state[sh]
+    # (action, label, next_state)
+    transitions = {
+        0: ("up",   "ready_up→moving_up",   1),
+        1: ("stop", "moving_up→ready_down", 2),
+        2: ("down", "ready_down→moving_down", 3),
+        3: ("stop", "moving_down→ready_up", 0),
+    }
+    action, label, next_state = transitions[state]
+    log.info("MODE5 sh=%d [%s] → %s (%.0f ms)", sh, label, action, duration_ms)
+    fd = _try_lock(sh)
+    if fd is None:
+        log.warning("sh%d locked, dropping %s", sh, action)
+        return
+    try:
+        _run([action, str(sh)])
+        _m5_state[sh] = next_state
+    finally:
+        _unlock(fd)
+
+
 def _on_release(pin: int, duration_ms: float) -> None:
     """Decide and dispatch action based on which button was released and for how long."""
     sh, direction = BUTTON_PINS[pin]
@@ -148,24 +213,17 @@ def _on_release(pin: int, duration_ms: float) -> None:
             return
         try:
             _run(["stop", "all"])
+            for k in _m5_state:
+                _m5_state[k] = 0
         finally:
             _unlock(fd)
         return
 
-    # Short press: start moving if stopped, stop if already moving
-    state = _read_state(sh)
-    action = direction if state == "stopped" else "stop"
-    log.info("pin=%d sh=%d dir=%s state=%s → %s (%.0f ms)",
-             pin, sh, direction, state, action, duration_ms)
-
-    fd = _try_lock(sh)
-    if fd is None:
-        log.warning("sh%d locked, dropping %s", sh, action)
-        return
-    try:
-        _run([action, str(sh)])
-    finally:
-        _unlock(fd)
+    mode = _get_button_mode()
+    if mode == 5:
+        _handle_mode5(sh, duration_ms)
+    else:
+        _handle_mode1(sh, direction, duration_ms)
 
 # ── gpiod v2 event loop ───────────────────────────────────────────
 def _loop_v2(chip_dev: str) -> None:
@@ -236,7 +294,7 @@ def _loop_v1(chip_dev: str) -> None:
 # ── Entry point ───────────────────────────────────────────────────
 def main() -> None:
     _setup_logging()
-    log.info("=== Shutter Button Daemon v1.1.0 starting ===")
+    log.info("=== Shutter Button Daemon v1.2.0 starting ===")
 
     if not os.path.isfile(SHUTTER_SCRIPT) or not os.access(SHUTTER_SCRIPT, os.X_OK):
         log.error("Not found or not executable: %s", SHUTTER_SCRIPT)
@@ -251,6 +309,9 @@ def main() -> None:
     except ImportError:
         log.error("python3-gpiod not installed. Run: sudo apt install python3-gpiod")
         sys.exit(1)
+
+    mode = _get_button_mode()
+    log.info("Button mode: %d", mode)
 
     chip_dev = _detect_chip()
     ver = getattr(gpiod, "__version__", "1.0.0")

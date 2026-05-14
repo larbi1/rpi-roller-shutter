@@ -18,6 +18,7 @@
       --stop-clr: #238636;
       --btn-bg:   #21262d;
       --btn-hov:  #30363d;
+      --cal:      #5a3fa0;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -54,9 +55,9 @@
       grid-template-columns: repeat(4, 1fr);
       gap: 12px;
       width: 100%;
-      max-width: 760px;
+      max-width: 800px;
     }
-    @media (max-width: 600px) {
+    @media (max-width: 620px) {
       .shutter-grid { grid-template-columns: repeat(2, 1fr); }
     }
 
@@ -64,17 +65,31 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 16px 10px;
+      padding: 12px 10px;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       transition: border-color .2s, background .2s;
     }
     .shutter-card.state-up   { border-color: var(--up);   background: var(--up-bg);   }
     .shutter-card.state-down { border-color: var(--down);  background: var(--down-bg); }
 
+    /* card top row: label + settings gear */
+    .card-top {
+      display: flex; justify-content: space-between; align-items: center;
+      width: 100%;
+    }
     .card-label { font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; }
+    .settings-btn {
+      background: none; border: none; color: var(--muted);
+      font-size: 0.85rem; cursor: pointer; padding: 1px 4px;
+      border-radius: 4px; transition: color .15s, background .15s;
+      line-height: 1;
+    }
+    .settings-btn:hover { color: var(--text); background: var(--btn-bg); }
+    .settings-btn.active { color: #a0a0ff; }
+
     .card-num   { font-size: 1.8rem; font-weight: 700; color: #f0f6fc; line-height: 1; }
     .card-pins  { font-size: 0.65rem; color: var(--muted); text-align: center; }
 
@@ -103,9 +118,25 @@
     .state-up   .state-badge { background: var(--up);   color: #b0c8ff; }
     .state-down .state-badge { background: var(--down);  color: #ffb0b0; }
 
+    /* Position bar */
+    .pos-row {
+      display: flex; align-items: center; gap: 6px; width: 100%;
+    }
+    .pos-track {
+      flex: 1; height: 5px; border-radius: 3px;
+      background: var(--btn-bg); border: 1px solid var(--border); overflow: hidden;
+    }
+    .pos-fill {
+      height: 100%; width: 50%; background: var(--muted); border-radius: 3px;
+      transition: width .6s ease;
+    }
+    .state-up   .pos-fill { background: var(--up); }
+    .state-down .pos-fill { background: var(--down); }
+    .pos-pct { font-size: 0.65rem; color: var(--muted); white-space: nowrap; min-width: 28px; text-align: right; }
+
     /* Control buttons per card */
     .card-btns {
-      display: flex; gap: 5px; width: 100%;
+      display: flex; gap: 4px; width: 100%;
     }
     .card-btn {
       flex: 1; padding: 7px 0;
@@ -113,7 +144,7 @@
       border-radius: 6px;
       background: var(--btn-bg);
       color: var(--text);
-      font-size: 1rem;
+      font-size: 0.95rem;
       cursor: pointer;
       transition: background .15s, border-color .15s;
       line-height: 1;
@@ -122,7 +153,49 @@
     .card-btn.btn-up:hover   { background: var(--up);   border-color: var(--up);   color: #fff; }
     .card-btn.btn-stop:hover { background: #238636;     border-color: #238636;     color: #fff; }
     .card-btn.btn-down:hover { background: var(--down);  border-color: var(--down); color: #fff; }
+    .card-btn.btn-cal        { color: var(--muted); font-size: 0.85rem; }
+    .card-btn.btn-cal:hover  { background: var(--cal); border-color: var(--cal); color: #fff; }
     .card-btn:disabled       { opacity: .45; cursor: not-allowed; }
+
+    /* Settings panel */
+    .settings-panel {
+      display: none; width: 100%;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+      flex-direction: column; gap: 7px;
+      font-size: 0.7rem;
+    }
+    .settings-panel.open { display: flex; }
+    .setting-row {
+      display: flex; align-items: center; gap: 5px; color: var(--muted);
+    }
+    .setting-row label { min-width: 64px; flex-shrink: 0; }
+    .setting-row input[type="text"],
+    .setting-row select {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); border-radius: 4px; padding: 3px 6px;
+      font-size: 0.7rem; min-width: 0;
+    }
+    .setting-row input[type="number"] {
+      width: 52px; flex: none;
+      background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); border-radius: 4px; padding: 3px 6px;
+      font-size: 0.7rem;
+    }
+    .setting-unit { color: var(--muted); flex-shrink: 0; }
+    .setting-divider { height: 1px; background: var(--border); margin: 2px 0; }
+    .save-btn {
+      width: 100%; padding: 5px;
+      background: var(--btn-bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 0.7rem; cursor: pointer;
+    }
+    .save-btn:hover { background: var(--up); border-color: var(--up); color: #fff; }
+    .go-btn {
+      padding: 3px 7px; flex-shrink: 0;
+      background: var(--btn-bg); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--muted); font-size: 0.7rem; cursor: pointer;
+    }
+    .go-btn:hover { background: #238636; border-color: #238636; color: #fff; }
 
     /* ── Global controls ── */
     .global-controls {
@@ -138,14 +211,16 @@
       cursor: pointer;
       transition: background .15s, border-color .15s;
     }
-    .gbtn:hover           { background: var(--btn-hov); }
-    .gbtn.gbtn-up:hover   { background: var(--up);   border-color: var(--up);   color: #fff; }
-    .gbtn.gbtn-stop:hover { background: #238636;     border-color: #238636;     color: #fff; }
-    .gbtn.gbtn-down:hover { background: var(--down);  border-color: var(--down); color: #fff; }
+    .gbtn:hover             { background: var(--btn-hov); }
+    .gbtn.gbtn-up:hover     { background: var(--up);   border-color: var(--up);   color: #fff; }
+    .gbtn.gbtn-stop:hover   { background: #238636;     border-color: #238636;     color: #fff; }
+    .gbtn.gbtn-down:hover   { background: var(--down);  border-color: var(--down); color: #fff; }
+    .gbtn.gbtn-cal:hover    { background: var(--cal);  border-color: var(--cal);  color: #fff; }
+    .gbtn:disabled          { opacity: .45; cursor: not-allowed; }
 
     /* ── API docs ── */
     details {
-      width: 100%; max-width: 760px;
+      width: 100%; max-width: 800px;
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 8px; padding: 12px 16px;
       font-size: 0.78rem; color: var(--muted);
@@ -156,7 +231,7 @@
       display: block; background: var(--bg);
       border: 1px solid var(--border); border-radius: 4px;
       padding: 8px 10px; margin: 4px 0; color: #adbac7;
-      font-family: 'SF Mono', Consolas, monospace; font-size: .75rem; white-space: pre;
+      font-family: 'SF Mono', Consolas, monospace; font-size: .72rem; white-space: pre;
     }
   </style>
 </head>
@@ -178,21 +253,28 @@
   <button class="gbtn gbtn-up"   onclick="allUp()">▲ All Up</button>
   <button class="gbtn gbtn-stop" onclick="allStop()">■ All Stop</button>
   <button class="gbtn gbtn-down" onclick="allDown()">▼ All Down</button>
+  <button class="gbtn gbtn-cal"  id="gcal" onclick="allCalibrate()">⟳ Cal All</button>
 </div>
 
 <details>
   <summary>REST API</summary>
-  <code>GET  /api/status                        → all shutter states (JSON)
-POST /api/shutter/{1-4}/up             → start moving up (until stopped)
-POST /api/shutter/{1-4}/down           → start moving down (until stopped)
-POST /api/shutter/{1-4}/stop           → stop immediately
-POST /api/shutter/{1-4}/open?ms=25000  → move up for N ms then stop
-POST /api/shutter/{1-4}/close?ms=25000 → move down for N ms then stop
-POST /api/all/up                       → all shutters up
-POST /api/all/down                     → all shutters down
-POST /api/all/stop                     → stop all shutters
-POST /api/all/open?ms=25000            → timed open all
-POST /api/all/close?ms=25000           → timed close all</code>
+  <code>GET  /api/status                          → all shutter states + positions (JSON)
+POST /api/shutter/{1-4}/up               → start moving up (continuous)
+POST /api/shutter/{1-4}/down             → start moving down (continuous)
+POST /api/shutter/{1-4}/stop             → stop immediately
+POST /api/shutter/{1-4}/open?ms=25000    → timed open (ms optional, uses UP_MS if absent)
+POST /api/shutter/{1-4}/close?ms=25000   → timed close (ms optional, uses DOWN_MS if absent)
+POST /api/shutter/{1-4}/calibrate        → full close then full open → position = 0%
+POST /api/shutter/{1-4}/pos?pct=50       → move to position % (0=open, 100=closed)
+POST /api/shutter/{1-4}/setpos?pct=50    → force-set position without movement
+GET  /api/shutter/{1-4}/config           → get motor config (JSON)
+POST /api/shutter/{1-4}/config           → set config (JSON body: NAME/END_STOPS/UP_MS/DOWN_MS)
+POST /api/all/up                         → all shutters up
+POST /api/all/down                       → all shutters down
+POST /api/all/stop                       → stop all shutters
+POST /api/all/open?ms=25000              → timed open all
+POST /api/all/close?ms=25000             → timed close all
+POST /api/all/calibrate                  → calibrate all shutters sequentially</code>
 </details>
 
 <script>
@@ -211,7 +293,10 @@ function buildGrid() {
     card.className = 'shutter-card';
     card.id = `sh${sh}`;
     card.innerHTML = `
-      <div class="card-label">Shutter</div>
+      <div class="card-top">
+        <div class="card-label">Shutter</div>
+        <button class="settings-btn" id="sbtn${sh}" onclick="toggleSettings(${sh})" title="Settings">⚙</button>
+      </div>
       <div class="card-num">${sh}</div>
       <div class="blind-icon" id="icon${sh}">
         <div class="slat"></div><div class="slat"></div>
@@ -220,17 +305,57 @@ function buildGrid() {
       </div>
       <div class="card-pins">↑ BCM ${r.up} &nbsp;|&nbsp; ↓ BCM ${r.down}</div>
       <div class="state-badge" id="badge${sh}">—</div>
+      <div class="pos-row">
+        <div class="pos-track"><div class="pos-fill" id="posbar${sh}"></div></div>
+        <span class="pos-pct" id="pospct${sh}">—</span>
+      </div>
       <div class="card-btns">
-        <button class="card-btn btn-up"   title="Up"   onclick="cmd(${sh},'up')">▲</button>
-        <button class="card-btn btn-stop" title="Stop" onclick="cmd(${sh},'stop')">■</button>
-        <button class="card-btn btn-down" title="Down" onclick="cmd(${sh},'down')">▼</button>
+        <button class="card-btn btn-up"   title="Up"        onclick="cmd(${sh},'up')">▲</button>
+        <button class="card-btn btn-stop" title="Stop"      onclick="cmd(${sh},'stop')">■</button>
+        <button class="card-btn btn-down" title="Down"      onclick="cmd(${sh},'down')">▼</button>
+        <button class="card-btn btn-cal"  title="Calibrate" onclick="calibrate(${sh})">⟳</button>
+      </div>
+      <div class="settings-panel" id="spanel${sh}">
+        <div class="setting-row">
+          <label>Name</label>
+          <input type="text" id="cfg_name${sh}" maxlength="20" placeholder="SH${sh}">
+        </div>
+        <div class="setting-row">
+          <label>End stops</label>
+          <select id="cfg_ends${sh}">
+            <option value="yes">Yes (Somfy/Nice)</option>
+            <option value="no">No (degraded mode)</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label>Open time</label>
+          <input type="number" id="cfg_up${sh}" min="1" max="120" step="0.5" placeholder="25">
+          <span class="setting-unit">s</span>
+        </div>
+        <div class="setting-row">
+          <label>Close time</label>
+          <input type="number" id="cfg_down${sh}" min="1" max="120" step="0.5" placeholder="25">
+          <span class="setting-unit">s</span>
+        </div>
+        <button class="save-btn" onclick="saveConfig(${sh})">Save Settings</button>
+        <div class="setting-divider"></div>
+        <div class="setting-row">
+          <label>Move to %</label>
+          <input type="number" id="cfg_pos${sh}" min="0" max="100" placeholder="50">
+          <button class="go-btn" onclick="doPos(${sh})">Go</button>
+        </div>
+        <div class="setting-row">
+          <label>Force set %</label>
+          <input type="number" id="cfg_setpos${sh}" min="0" max="100" placeholder="0">
+          <button class="go-btn" onclick="doSetpos(${sh})">Set</button>
+        </div>
       </div>
     `;
     grid.appendChild(card);
   }
 }
 
-function applyState(sh, state) {
+function applyState(sh, state, position) {
   const card  = document.getElementById(`sh${sh}`);
   const badge = document.getElementById(`badge${sh}`);
   if (!card) return;
@@ -239,6 +364,10 @@ function applyState(sh, state) {
   if (state === 'down') card.classList.add('state-down');
   const labels = {up: '▲ UP', down: '▼ DOWN', stopped: '■ STOPPED'};
   badge.textContent = labels[state] ?? '—';
+  if (position !== undefined && position !== null) {
+    document.getElementById(`posbar${sh}`).style.width = `${position}%`;
+    document.getElementById(`pospct${sh}`).textContent = `${position}%`;
+  }
 }
 
 async function fetchStatus() {
@@ -246,7 +375,9 @@ async function fetchStatus() {
     const r = await fetch('/api/status');
     if (!r.ok) throw new Error(r.status);
     const { shutters } = await r.json();
-    for (const [sh, info] of Object.entries(shutters)) applyState(+sh, info.state);
+    for (const [sh, info] of Object.entries(shutters)) {
+      applyState(+sh, info.state, info.position);
+    }
     document.getElementById('dot').classList.remove('error');
     document.getElementById('live-text').textContent =
       'Updated ' + new Date().toLocaleTimeString();
@@ -266,15 +397,107 @@ async function cmd(sh, action) {
   btns.forEach(b => b.disabled = true);
   try {
     const data = await post(`/api/shutter/${sh}/${action}`);
-    applyState(sh, data.state);
+    applyState(sh, data.state, data.position);
   } finally {
     btns.forEach(b => b.disabled = false);
+  }
+}
+
+async function calibrate(sh) {
+  const btns = document.querySelectorAll(`#sh${sh} .card-btn`);
+  btns.forEach(b => b.disabled = true);
+  document.getElementById(`badge${sh}`).textContent = '⟳ CAL…';
+  try {
+    const data = await post(`/api/shutter/${sh}/calibrate`);
+    applyState(sh, data.state, data.position);
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+async function allCalibrate() {
+  document.querySelectorAll('.card-btn, .gbtn').forEach(b => b.disabled = true);
+  try {
+    for (let sh = 1; sh <= 4; sh++) {
+      document.getElementById(`badge${sh}`).textContent = '⟳ CAL…';
+      const data = await post(`/api/shutter/${sh}/calibrate`);
+      applyState(sh, data.state, data.position);
+    }
+  } finally {
+    document.querySelectorAll('.card-btn, .gbtn').forEach(b => b.disabled = false);
   }
 }
 
 async function allUp()   { await post('/api/all/up');   fetchStatus(); }
 async function allStop() { await post('/api/all/stop'); fetchStatus(); }
 async function allDown() { await post('/api/all/down'); fetchStatus(); }
+
+// ── Settings panel ──────────────────────────────────────────────
+function toggleSettings(sh) {
+  const panel = document.getElementById(`spanel${sh}`);
+  const btn   = document.getElementById(`sbtn${sh}`);
+  const willOpen = !panel.classList.contains('open');
+  panel.classList.toggle('open');
+  btn.classList.toggle('active');
+  if (willOpen) loadConfig(sh);
+}
+
+async function loadConfig(sh) {
+  try {
+    const r = await fetch(`/api/shutter/${sh}/config`);
+    if (!r.ok) return;
+    const { config } = await r.json();
+    const e = id => document.getElementById(`cfg_${id}${sh}`);
+    if (config.NAME)      e('name').value  = config.NAME;
+    if (config.END_STOPS) e('ends').value  = config.END_STOPS;
+    if (config.UP_MS)     e('up').value    = (parseInt(config.UP_MS)   / 1000).toFixed(1);
+    if (config.DOWN_MS)   e('down').value  = (parseInt(config.DOWN_MS) / 1000).toFixed(1);
+  } catch (err) { console.warn('loadConfig', sh, err); }
+}
+
+async function saveConfig(sh) {
+  const e = id => document.getElementById(`cfg_${id}${sh}`);
+  const upSec   = parseFloat(e('up').value   || '25');
+  const downSec = parseFloat(e('down').value || '25');
+  const body = {
+    NAME:      e('name').value.trim() || `SH${sh}`,
+    END_STOPS: e('ends').value,
+    UP_MS:     String(Math.round(upSec   * 1000)),
+    DOWN_MS:   String(Math.round(downSec * 1000)),
+  };
+  try {
+    const r = await fetch(`/api/shutter/${sh}/config`, {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify(body),
+    });
+    if (r.ok) {
+      const saveBtn = document.querySelector(`#spanel${sh} .save-btn`);
+      if (saveBtn) { saveBtn.textContent = 'Saved ✓'; setTimeout(() => saveBtn.textContent = 'Save Settings', 1500); }
+    }
+  } catch (err) { console.warn('saveConfig', sh, err); }
+}
+
+async function doPos(sh) {
+  const val = document.getElementById(`cfg_pos${sh}`).value.trim();
+  if (val === '') return;
+  const btns = document.querySelectorAll(`#sh${sh} .card-btn`);
+  btns.forEach(b => b.disabled = true);
+  document.getElementById(`badge${sh}`).textContent = '→ POS…';
+  try {
+    const data = await post(`/api/shutter/${sh}/pos?pct=${val}`);
+    applyState(sh, data.state, data.position);
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+async function doSetpos(sh) {
+  const val = document.getElementById(`cfg_setpos${sh}`).value.trim();
+  if (val === '') return;
+  const data = await post(`/api/shutter/${sh}/setpos?pct=${val}`);
+  applyState(sh, data.state, data.position);
+}
 
 buildGrid();
 fetchStatus();

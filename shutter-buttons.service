@@ -6,6 +6,7 @@ After=network.target shutter-web.service
 Type=simple
 User=akaw
 WorkingDirectory=/home/akaw/waveshare-shutter
+Environment=SHUTTER_HOME=/home/akaw/waveshare-shutter
 ExecStart=/usr/bin/python3 button_daemon.py
 Restart=on-failure
 RestartSec=5
