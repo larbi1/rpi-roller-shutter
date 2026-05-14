@@ -1,0 +1,138 @@
+{
+  "project": "waveshare-shutter",
+  "version": "1.0.0",
+  "description": "Roller Shutter Controller using Waveshare RPi Relay Board (B) on Raspberry Pi 5",
+  "created": "2026-05-14",
+
+  "board": {
+    "manufacturer": "Waveshare",
+    "model": "RPi Relay Board (B)",
+    "url": "https://www.waveshare.com/wiki/RPi_Relay_Board_(B)",
+    "channels": 8,
+    "channels_used": 8,
+    "logic": "active-low",
+    "gpio_value_on": 0,
+    "gpio_value_off": 1,
+    "shutter_mapping": {
+      "SH1": { "up_relay": "CH1", "up_bcm": 5,  "down_relay": "CH2", "down_bcm": 6  },
+      "SH2": { "up_relay": "CH3", "up_bcm": 13, "down_relay": "CH4", "down_bcm": 16 },
+      "SH3": { "up_relay": "CH5", "up_bcm": 19, "down_relay": "CH6", "down_bcm": 20 },
+      "SH4": { "up_relay": "CH7", "up_bcm": 21, "down_relay": "CH8", "down_bcm": 26 }
+    }
+  },
+
+  "platform": {
+    "target": "Raspberry Pi 5",
+    "os": "Raspberry Pi OS Bookworm (Debian 12+)",
+    "gpio_driver": "libgpiod",
+    "gpio_driver_version_supported": ["1.x", "2.x"],
+    "gpio_chip": "auto-detected (usually gpiochip0 on RPi 5)",
+    "deprecated_interfaces": ["sysfs (/sys/class/gpio)", "RPi.GPIO Python library"]
+  },
+
+  "dependencies": {
+    "apt": ["gpiod"],
+    "python": ["flask"],
+    "commands_required": ["gpioset", "gpiodetect"],
+    "install_command": "sudo apt update && sudo apt install gpiod python3-flask"
+  },
+
+  "files": {
+    "shutter_control.sh": {
+      "type": "main_script",
+      "description": "Bash roller shutter controller with interlock safety and libgpiod daemon management",
+      "executable": true,
+      "shebang": "#!/bin/bash",
+      "install_path": "/usr/local/bin/shutter_control.sh"
+    },
+    "shutter_web.py": {
+      "type": "web_server",
+      "description": "Flask REST API + HTML dashboard for 4-shutter web control",
+      "port": 8081,
+      "requires": "python3-flask",
+      "deploy_path": "/home/akaw/waveshare-shutter/shutter_web.py"
+    },
+    "templates/index.html": {
+      "type": "web_ui",
+      "description": "Dark-theme dashboard with 4 shutter cards, animated blind icons, per-card ▲/■/▼ controls, global All Up/Stop/Down"
+    },
+    "shutter-web.service": {
+      "type": "systemd_unit",
+      "description": "systemd service for shutter_web.py — enable once, then use systemctl start/stop/status shutter-web",
+      "install_path": "/etc/systemd/system/shutter-web.service"
+    },
+    "README.txt": {
+      "type": "documentation",
+      "description": "User-facing installation, usage, and troubleshooting guide"
+    },
+    "CLAUDE.md": {
+      "type": "ai_context",
+      "description": "Critical facts, architecture notes, and constraints for AI assistants"
+    },
+    "CLAUDE.json": {
+      "type": "project_metadata",
+      "description": "Machine-readable project metadata and configuration"
+    }
+  },
+
+  "runtime": {
+    "state_directory": "/tmp/shutter_board",
+    "log_file": "/tmp/shutter_board.log",
+    "state_files": {
+      "pattern": "/tmp/shutter_board/sh{N}.state",
+      "values": ["up", "down", "stopped"]
+    },
+    "daemon_mechanism": {
+      "libgpiod_v1": "gpioset --mode=signal <chip> <pin>=<value> &",
+      "libgpiod_v2": "gpioset --daemonize <chip> <pin>=<value>"
+    }
+  },
+
+  "safety": {
+    "interlock": true,
+    "interlock_description": "UP and DOWN relays are never active simultaneously; direction change requires 0.5s motor coil discharge delay",
+    "change_delay_seconds": 0.5
+  },
+
+  "commands": {
+    "up":     { "args": "<1-4 ...>",          "description": "Start moving shutter(s) UP" },
+    "down":   { "args": "<1-4 ...>",          "description": "Start moving shutter(s) DOWN" },
+    "stop":   { "args": "<1-4 ...| all>",     "description": "Stop shutter(s) immediately" },
+    "open":   { "args": "<1-4> [ms]",         "description": "Move UP for duration then stop (default 30000ms)" },
+    "close":  { "args": "<1-4> [ms]",         "description": "Move DOWN for duration then stop (default 30000ms)" },
+    "status": { "args": "",                   "description": "Show all shutter states and daemon PIDs" },
+    "reset":  { "args": "",                   "description": "Stop all shutters safely" },
+    "help":   { "args": "",                   "description": "Show usage" }
+  },
+
+  "known_issues": {
+    "state_lost_on_reboot": {
+      "description": "State files and GPIO daemons are in /tmp — lost on reboot",
+      "mitigation": "Shutters stay at last physical position; add a systemd ExecStartPre to reset if needed"
+    },
+    "gpioset_exclusive_access": {
+      "description": "gpioget cannot read a line held by an active gpioset daemon",
+      "mitigation": "State tracked via /tmp/shutter_board/shN.state files instead of live GPIO reads"
+    },
+    "rpi5_chip_number": {
+      "description": "RPi 5 GPIO chip may be gpiochip0 or gpiochip4 depending on firmware",
+      "mitigation": "Script auto-detects the chip with the highest line count (≥27 required)"
+    }
+  },
+
+  "environment_variables": {
+    "DEBUG": {
+      "values": ["0", "1"],
+      "default": "0",
+      "description": "Set to 1 for verbose chip/version/state debug output"
+    },
+    "PORT": {
+      "default": "8081",
+      "description": "Web server port for shutter_web.py"
+    },
+    "SHUTTER_SCRIPT": {
+      "default": "/usr/local/bin/shutter_control.sh",
+      "description": "Path to shutter_control.sh used by the web server"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+[Unit]
+Description=Waveshare RPi Relay Board (B) — Roller Shutter Web Controller
+After=network.target
+
+[Service]
+Type=simple
+User=akaw
+WorkingDirectory=/home/akaw/waveshare-shutter
+ExecStart=/usr/bin/python3 shutter_web.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
