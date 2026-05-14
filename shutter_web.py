@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Waveshare RPi Relay Board (B) — Roller Shutter Web Controller v1.0.0
+Waveshare RPi Relay Board (B) — Roller Shutter Web Controller v1.1.0
 REST API + live HTML dashboard for 4-shutter control on Raspberry Pi 5.
 
 Usage:
@@ -10,8 +10,11 @@ Usage:
 Requires: flask  (sudo apt install python3-flask)
 """
 
+import fcntl
 import os
 import subprocess
+import time
+from contextlib import contextmanager
 from flask import Flask, jsonify, render_template, request
 
 # ── Config ────────────────────────────────────────────────────────
@@ -29,6 +32,31 @@ RELAY_MAP = {
 }
 
 app = Flask(__name__)
+
+# ── Lock files (cross-process mutex with button_daemon.py) ─────────
+
+@contextmanager
+def _lock(sh: int):
+    """Blocking exclusive flock on sh{N}.lock (sh=0: global). Waits up to 6 s."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    path = os.path.join(STATE_DIR, f"sh{sh}.lock")
+    deadline = time.monotonic() + 6.0
+    with open(path, "w") as fd:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break  # proceed without lock after timeout
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
 
 # ── Helpers ───────────────────────────────────────────────────────
 
@@ -89,7 +117,8 @@ def api_status():
 def shutter_up(sh: int):
     if sh not in SHUTTERS:
         return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
-    ok, msg = _run(["up", str(sh)])
+    with _lock(sh):
+        ok, msg = _run(["up", str(sh)])
     return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
 
 
@@ -97,7 +126,8 @@ def shutter_up(sh: int):
 def shutter_down(sh: int):
     if sh not in SHUTTERS:
         return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
-    ok, msg = _run(["down", str(sh)])
+    with _lock(sh):
+        ok, msg = _run(["down", str(sh)])
     return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
 
 
@@ -105,7 +135,8 @@ def shutter_down(sh: int):
 def shutter_stop(sh: int):
     if sh not in SHUTTERS:
         return jsonify({"error": f"Invalid shutter {sh}. Valid: 1-4"}), 400
-    ok, msg = _run(["stop", str(sh)])
+    with _lock(sh):
+        ok, msg = _run(["stop", str(sh)])
     return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
 
 
@@ -116,7 +147,8 @@ def shutter_open(sh: int):
     ms = request.args.get("ms", "30000")
     if not ms.isdigit() or int(ms) < 1:
         return jsonify({"error": "ms must be a positive integer"}), 400
-    ok, msg = _run(["open", str(sh), ms], timeout=int(ms) // 1000 + 5)
+    with _lock(sh):
+        ok, msg = _run(["open", str(sh), ms], timeout=int(ms) // 1000 + 5)
     return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
 
 
@@ -127,31 +159,35 @@ def shutter_close(sh: int):
     ms = request.args.get("ms", "30000")
     if not ms.isdigit() or int(ms) < 1:
         return jsonify({"error": "ms must be a positive integer"}), 400
-    ok, msg = _run(["close", str(sh), ms], timeout=int(ms) // 1000 + 5)
+    with _lock(sh):
+        ok, msg = _run(["close", str(sh), ms], timeout=int(ms) // 1000 + 5)
     return jsonify(_sh_json(sh, ok, msg)), 200 if ok else 500
 
 
 @app.route("/api/all/up", methods=["POST"])
 def all_up():
     results = []
-    for sh in SHUTTERS:
-        ok, msg = _run(["up", str(sh)])
-        results.append(_sh_json(sh, ok, msg))
+    with _lock(0):
+        for sh in SHUTTERS:
+            ok, msg = _run(["up", str(sh)])
+            results.append(_sh_json(sh, ok, msg))
     return jsonify({"shutters": _all_states(), "results": results})
 
 
 @app.route("/api/all/down", methods=["POST"])
 def all_down():
     results = []
-    for sh in SHUTTERS:
-        ok, msg = _run(["down", str(sh)])
-        results.append(_sh_json(sh, ok, msg))
+    with _lock(0):
+        for sh in SHUTTERS:
+            ok, msg = _run(["down", str(sh)])
+            results.append(_sh_json(sh, ok, msg))
     return jsonify({"shutters": _all_states(), "results": results})
 
 
 @app.route("/api/all/stop", methods=["POST"])
 def all_stop():
-    ok, msg = _run(["stop", "all"])
+    with _lock(0):
+        ok, msg = _run(["stop", "all"])
     return jsonify({"success": ok, "message": msg, "shutters": _all_states()})
 
 
@@ -159,9 +195,10 @@ def all_stop():
 def all_open():
     ms = request.args.get("ms", "30000")
     results = []
-    for sh in SHUTTERS:
-        ok, msg = _run(["open", str(sh), ms], timeout=int(ms) // 1000 + 5)
-        results.append(_sh_json(sh, ok, msg))
+    with _lock(0):
+        for sh in SHUTTERS:
+            ok, msg = _run(["open", str(sh), ms], timeout=int(ms) // 1000 + 5)
+            results.append(_sh_json(sh, ok, msg))
     return jsonify({"shutters": _all_states(), "results": results})
 
 
@@ -169,9 +206,10 @@ def all_open():
 def all_close():
     ms = request.args.get("ms", "30000")
     results = []
-    for sh in SHUTTERS:
-        ok, msg = _run(["close", str(sh), ms], timeout=int(ms) // 1000 + 5)
-        results.append(_sh_json(sh, ok, msg))
+    with _lock(0):
+        for sh in SHUTTERS:
+            ok, msg = _run(["close", str(sh), ms], timeout=int(ms) // 1000 + 5)
+            results.append(_sh_json(sh, ok, msg))
     return jsonify({"shutters": _all_states(), "results": results})
 
 

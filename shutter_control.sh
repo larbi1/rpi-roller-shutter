@@ -1,7 +1,7 @@
 #!/bin/bash
 ###################################################################
 ##   Waveshare RPi Relay Board (B) — Roller Shutter Controller  ##
-##   v1.0.0  ·  Raspberry Pi 5 · libgpiod v2.x / v1.x          ##
+##   v1.1.0  ·  Raspberry Pi 5 · libgpiod v2.x / v1.x          ##
 ###################################################################
 ##  4 shutters, 2 relays each (UP + DOWN), active-low            ##
 ##  SH1: UP=CH1/BCM5   DOWN=CH2/BCM6                            ##
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────
-readonly VERSION="1.0.0"
+readonly VERSION="1.1.0"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly STATE_DIR="/tmp/shutter_board"
 readonly LOG_FILE="/tmp/shutter_board.log"
