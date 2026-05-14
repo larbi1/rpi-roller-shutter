@@ -18,18 +18,36 @@ REQUIREMENTS
 ------------
   sudo apt update && sudo apt install gpiod python3-flask
 
-INSTALLATION
-------------
-1. Copy shutter_control.sh to RPi:
-     scp shutter_control.sh akaw@<rpi-ip>:/tmp/
-     ssh akaw@<rpi-ip> "sudo cp /tmp/shutter_control.sh /usr/local/bin/ && sudo chmod +x /usr/local/bin/shutter_control.sh"
+DEPLOY (on the Raspberry Pi)
+-----------------------------
+Run these commands directly on the RPi 5 (or via SSH):
 
-2. Copy web server files to RPi:
-     scp -r shutter_web.py templates akaw@<rpi-ip>:~/waveshare-shutter/
+  Step 1 — Install dependencies:
+    sudo apt update && sudo apt install -y gpiod python3-flask
 
-3. Install the systemd service:
-     scp shutter-web.service akaw@<rpi-ip>:/tmp/
-     ssh akaw@<rpi-ip> "sudo cp /tmp/shutter-web.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable shutter-web"
+  Step 2 — Clone the repository:
+    git clone https://github.com/larbi1/rpi-roller-shutter.git ~/waveshare-shutter
+
+  Step 3 — Install the CLI script:
+    sudo cp ~/waveshare-shutter/shutter_control.sh /usr/local/bin/
+    sudo chmod +x /usr/local/bin/shutter_control.sh
+
+  Step 4 — Install and enable the systemd service:
+    sudo cp ~/waveshare-shutter/shutter-web.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now shutter-web
+
+  Step 5 — Verify:
+    shutter_control.sh status
+    sudo systemctl status shutter-web
+
+  The web dashboard is now available at:  http://<rpi-ip>:8081
+
+UPDATE (pull latest from GitHub)
+----------------------------------
+  cd ~/waveshare-shutter && git pull
+  sudo cp shutter_control.sh /usr/local/bin/
+  sudo systemctl restart shutter-web
 
 BASH CLI USAGE
 --------------
