@@ -1,0 +1,820 @@
+#!/usr/bin/env python3
+"""
+gen_doc.py — Generate ButtonControl_TechnicalDoc.odt
+Generates styled HTML → converts to ODT via LibreOffice headless.
+"""
+
+import os
+import subprocess
+import sys
+import glob
+
+HTML_PATH = "/tmp/shutter_doc.html"
+OUT_DIR = "/data/claude_share/waveshare-shutter"
+FINAL_NAME = "ButtonControl_TechnicalDoc.odt"
+FINAL_PATH = os.path.join(OUT_DIR, FINAL_NAME)
+
+
+# ---------------------------------------------------------------------------
+# HTML content
+# ---------------------------------------------------------------------------
+
+HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Roller Shutter Control System — Technical Documentation</title>
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 11pt;
+    margin: 2.5cm;
+    color: #222;
+    line-height: 1.5;
+  }
+  h1 {
+    font-size: 22pt;
+    color: #1a3a5c;
+    border-bottom: 2px solid #1a3a5c;
+    margin-top: 30px;
+    padding-bottom: 6px;
+  }
+  h2 {
+    font-size: 16pt;
+    color: #1a3a5c;
+    margin-top: 24px;
+  }
+  h3 {
+    font-size: 13pt;
+    color: #2c5f8a;
+    margin-top: 16px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0;
+  }
+  th {
+    background: #1a3a5c;
+    color: white;
+    padding: 8px 12px;
+    text-align: left;
+  }
+  td {
+    padding: 7px 12px;
+    border: 1px solid #ccc;
+  }
+  tr:nth-child(even) { background: #f0f4f8; }
+  code, pre {
+    background: #f4f4f4;
+    border: 1px solid #ddd;
+    padding: 10px;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 10pt;
+    border-radius: 4px;
+    display: block;
+    white-space: pre-wrap;
+  }
+  .warning {
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    padding: 10px;
+    margin: 10px 0;
+  }
+  .info {
+    background: #d1ecf1;
+    border-left: 4px solid #17a2b8;
+    padding: 10px;
+    margin: 10px 0;
+  }
+  .title-page {
+    text-align: center;
+    padding: 80px 0 60px 0;
+  }
+  .title-page h1 {
+    font-size: 26pt;
+    border: none;
+    margin-bottom: 10px;
+  }
+  .title-page .subtitle {
+    font-size: 13pt;
+    color: #2c5f8a;
+    margin-bottom: 30px;
+  }
+  .status-badge {
+    display: inline-block;
+    background: #ffc107;
+    color: #333;
+    padding: 4px 16px;
+    border-radius: 12px;
+    font-weight: bold;
+    font-size: 11pt;
+    margin-top: 12px;
+  }
+  .meta-table {
+    width: auto;
+    margin: 20px auto;
+  }
+  .meta-table td {
+    border: none;
+    padding: 4px 16px;
+    text-align: left;
+  }
+  ol li { margin-bottom: 6px; }
+  ul li { margin-bottom: 4px; }
+  .pb { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================
+     TITLE PAGE
+     ================================================================ -->
+<div class="title-page">
+  <h1>Roller Shutter Control System<br/>Technical Documentation</h1>
+  <div class="subtitle">
+    Waveshare RPi Relay Board (B) &middot; Raspberry Pi 5 &middot; Web Control + GPIO Button Integration
+  </div>
+  <table class="meta-table">
+    <tr><td><strong>Version</strong></td><td>1.1</td></tr>
+    <tr><td><strong>Date</strong></td><td>2026-05-14</td></tr>
+    <tr><td><strong>Author</strong></td><td>akaw</td></tr>
+    <tr><td><strong>Repository</strong></td><td>https://github.com/larbi1/rpi-roller-shutter</td></tr>
+  </table>
+  <div class="status-badge" style="background:#28a745;color:#fff;">Status: v1.1.0 &mdash; Implemented</div>
+</div>
+
+<!-- ================================================================
+     SECTION 1 — PROJECT OVERVIEW
+     ================================================================ -->
+<h1 class="pb">Section 1 &mdash; Project Overview</h1>
+
+<h2>1.1 Goal</h2>
+<p>
+The system controls <strong>4 roller shutters</strong> via a Raspberry Pi 5 and a
+Waveshare RPi Relay Board (B). It provides <strong>two independent, simultaneous
+control channels</strong>:
+</p>
+<ul>
+  <li><strong>Web interface</strong> &mdash; any phone, tablet, or computer on the local
+      Ethernet or Wi-Fi network opens a browser to <code>http://&lt;rpi-ip&gt;:8081</code>
+      and controls any shutter from anywhere in the building.</li>
+  <li><strong>Physical buttons</strong> &mdash; 8 wall-mounted push-buttons (4 UP + 4 DOWN)
+      give instant local control without any device. Inspired by the
+      <strong>GCE Electronics X-4VR V2</strong> which uses the same 8-input principle.</li>
+</ul>
+<p>
+Both channels operate simultaneously and independently. Either can be used at any time.
+A concurrency lock prevents conflicts when both are used at the same moment on the
+same shutter.
+</p>
+
+<h2>1.2 Scope</h2>
+<ul>
+  <li>4 shutters &times; 2 relays each = 8 relays (all 8 channels of the Waveshare board used)</li>
+  <li><strong>Web control:</strong> Flask REST API on port 8081, dark-theme dashboard, accessible
+      from any device on the network via Ethernet or Wi-Fi</li>
+  <li><strong>Button control:</strong> 4 shutters &times; 2 buttons (UP + DOWN) = 8 buttons total</li>
+  <li>Python daemon using <code>python3-gpiod</code> for event-driven GPIO button monitoring</li>
+  <li>Button behaviour identical to X-4VR V2 Mode 1 &ldquo;VR &ndash; Push Button&rdquo;</li>
+  <li>Both channels share a single relay controller (<code>shutter_control.sh</code>) with
+      per-shutter locking to prevent race conditions</li>
+  <li>All processes run as systemd services, auto-start on boot</li>
+</ul>
+
+<h2>1.3 Control Architecture</h2>
+
+<table>
+  <tr>
+    <th>Attribute</th>
+    <th>Web Control (phone / computer)</th>
+    <th>Button Control (physical)</th>
+  </tr>
+  <tr><td>Access method</td><td>Browser over Ethernet or Wi-Fi</td><td>Wall-mounted push-button</td></tr>
+  <tr><td>Access location</td><td>Anywhere on local network</td><td>Local (button location only)</td></tr>
+  <tr><td>Technology</td><td>Flask HTTP server, REST API</td><td>python3-gpiod GPIO daemon</td></tr>
+  <tr><td>Commands available</td><td>Up, Down, Stop, Timed Open/Close, All</td><td>Up, Down, Stop, Long-press All Stop</td></tr>
+  <tr><td>State feedback</td><td>Live dashboard, auto-refresh 3&nbsp;s</td><td>None (physical observation)</td></tr>
+  <tr><td>Process</td><td>shutter_web.py (shutter-web.service)</td><td>button_daemon.py (shutter-buttons.service)</td></tr>
+  <tr><td>Relay controller</td><td>shutter_control.sh (shared)</td><td>shutter_control.sh (shared)</td></tr>
+  <tr><td>Interlock safety</td><td>Enforced by shutter_control.sh</td><td>Enforced by shutter_control.sh</td></tr>
+  <tr><td>Status</td><td>Implemented (v1.1.0)</td><td>Implemented (v1.1.0) &mdash; awaiting hardware</td></tr>
+</table>
+
+<h3>Architecture Diagram</h3>
+<pre>
+  ┌──────────────────────────┐      ┌──────────────────────────┐
+  │   Phone / Computer       │      │   Wall push-buttons       │
+  │   (browser or curl)      │      │   8 × momentary NO        │
+  └────────────┬─────────────┘      └────────────┬─────────────┘
+               │ HTTP :8081                       │ GPIO (3.3V/GND)
+               ▼                                  ▼
+  ┌─────────────────────┐          ┌──────────────────────────┐
+  │   shutter_web.py    │          │   button_daemon.py        │
+  │   (Flask REST API)  │          │   (python3-gpiod events)  │
+  └────────────┬────────┘          └────────────┬─────────────┘
+               │ subprocess                      │ subprocess
+               │      ┌──────────────────────────┘
+               ▼      ▼
+  ┌────────────────────────────────────────────────────────┐
+  │              shutter_control.sh                         │
+  │   per-shutter lock + interlock (0.5 s delay)           │
+  └────────────────────────┬───────────────────────────────┘
+                           │ gpioset (libgpiod)
+                           ▼
+  ┌────────────────────────────────────────────────────────┐
+  │         Waveshare RPi Relay Board (B)                  │
+  │   8 relays — CH1/CH2 CH3/CH4 CH5/CH6 CH7/CH8          │
+  └────────────────────────┬───────────────────────────────┘
+                           │ 230V AC
+                           ▼
+  ┌────────────────────────────────────────────────────────┐
+  │         4 roller shutter motors                        │
+  │   SH1        SH2        SH3        SH4                 │
+  └────────────────────────────────────────────────────────┘
+</pre>
+
+<div class="info">
+  <strong>Status:</strong> Software fully implemented (v1.1.0) &mdash; awaiting button hardware purchase
+  and on-device wiring. Web control operational; button daemon ready to deploy.
+</div>
+
+<!-- ================================================================
+     SECTION 2 — ELECTRICAL SPECIFICATIONS
+     ================================================================ -->
+<h1 class="pb">Section 2 &mdash; Electrical Roller Shutter Specifications</h1>
+
+<h2>2.1 Motor Type</h2>
+<p>
+Standard European roller shutter motors: <strong>single-phase AC, 230&nbsp;V 50&nbsp;Hz</strong>.
+Three conductors:
+</p>
+<ul>
+  <li><strong>Mont&eacute;e / UP</strong> &mdash; phase energised for upward travel</li>
+  <li><strong>Descente / DOWN</strong> &mdash; phase energised for downward travel</li>
+  <li><strong>Neutral</strong> &mdash; common return; some motors add PE (protective earth)</li>
+</ul>
+<p>
+Active direction is determined by which phase conductor is energised; the other floats.
+</p>
+
+<div class="warning">
+  <strong>CRITICAL:</strong> UP and DOWN conductors must <u>NEVER</u> be energised
+  simultaneously &mdash; this would short two phase legs, destroying the motor or tripping
+  the breaker.
+</div>
+
+<h2>2.2 Electrical Ratings</h2>
+<table>
+  <tr><th>Parameter</th><th>Value</th></tr>
+  <tr><td>Supply voltage</td><td>230&nbsp;V AC &plusmn;10%, 50&nbsp;Hz</td></tr>
+  <tr><td>Motor power</td><td>30&nbsp;W &ndash; 200&nbsp;W (depends on shutter size)</td></tr>
+  <tr><td>Running current</td><td>0.15&nbsp;A &ndash; 0.9&nbsp;A at 230&nbsp;V</td></tr>
+  <tr><td>Inrush current</td><td>3&ndash;8&times; running current, first 100&ndash;300&nbsp;ms</td></tr>
+  <tr><td>End stops</td><td>Mechanical or electronic (built into motor)</td></tr>
+  <tr><td>Thermal protection</td><td>Built into motor (auto-reset after cool-down)</td></tr>
+  <tr><td>Power factor</td><td>0.8 &ndash; 0.95</td></tr>
+</table>
+
+<h2>2.3 Relay Requirements</h2>
+<p>
+Waveshare RPi Relay Board (B) relay contact rating: <strong>10&nbsp;A @ 250&nbsp;V AC</strong>
+(resistive load). This is well above motor running current (max ~0.9&nbsp;A).
+Inrush current (up to ~7&nbsp;A for 100&nbsp;ms) is within relay contact rating.
+Relay switching life: ~100,000 operations (electromechanical).
+</p>
+<div class="info">
+  <strong>Note:</strong> For inductive motor loads, an RC snubber across relay contacts is
+  recommended to reduce arc damage &mdash; optional for low-power motors but good practice.
+</div>
+
+<h2>2.4 Hardware Interlock Requirement</h2>
+<p>
+<strong>Software interlock:</strong> <code>shutter_control.sh</code> enforces a
+0.5&nbsp;s delay between releasing one relay direction and engaging the opposite.
+</p>
+<p>
+<strong>Optional:</strong> mechanical interlock relay for belt-and-suspenders hardware
+safety &mdash; not planned for this project but recommended for high-cycle installations.
+</p>
+
+<!-- ================================================================
+     SECTION 3 — HARDWARE STACK
+     ================================================================ -->
+<h1 class="pb">Section 3 &mdash; Hardware Stack</h1>
+
+<h2>3.1 Raspberry Pi 5</h2>
+<table>
+  <tr><th>Attribute</th><th>Detail</th></tr>
+  <tr><td>CPU</td><td>Broadcom BCM2712, quad-core Cortex-A76 @ 2.4&nbsp;GHz</td></tr>
+  <tr><td>RAM</td><td>4&nbsp;GB or 8&nbsp;GB LPDDR4X</td></tr>
+  <tr><td>GPIO</td><td>40-pin header, 26 user-accessible GPIO, 3.3&nbsp;V logic</td></tr>
+  <tr><td>GPIO driver</td><td>RP1 southbridge via libgpiod (NOT sysfs &mdash; deprecated on RPi&nbsp;5)</td></tr>
+  <tr><td>OS</td><td>Raspberry Pi OS Bookworm (Debian 12)</td></tr>
+  <tr><td>Power</td><td>5&nbsp;V / 5&nbsp;A via USB-C PD</td></tr>
+</table>
+
+<h2>3.2 Waveshare RPi Relay Board (B)</h2>
+<table>
+  <tr><th>Attribute</th><th>Detail</th></tr>
+  <tr><td>Channels</td><td>8 relays</td></tr>
+  <tr><td>Logic</td><td>Active-low (GPIO LOW = relay ON, GPIO HIGH = relay OFF)</td></tr>
+  <tr><td>Contact rating</td><td>10&nbsp;A @ 250&nbsp;V AC</td></tr>
+  <tr><td>Control voltage</td><td>3.3&nbsp;V GPIO</td></tr>
+  <tr><td>Header</td><td>Plugs onto 40-pin GPIO header (occupies all 40 pins physically)</td></tr>
+  <tr><td>BCM pins used</td><td>5, 6, 13, 16, 19, 20, 21, 26</td></tr>
+</table>
+
+<h3>Shutter-to-Relay Mapping</h3>
+<table>
+  <tr>
+    <th>Shutter</th>
+    <th>UP Relay</th><th>UP BCM</th><th>Header</th>
+    <th>DOWN Relay</th><th>DOWN BCM</th><th>Header</th>
+  </tr>
+  <tr><td>SH1</td><td>CH1</td><td>BCM 5</td><td>Pin 29</td><td>CH2</td><td>BCM 6</td><td>Pin 31</td></tr>
+  <tr><td>SH2</td><td>CH3</td><td>BCM 13</td><td>Pin 33</td><td>CH4</td><td>BCM 16</td><td>Pin 36</td></tr>
+  <tr><td>SH3</td><td>CH5</td><td>BCM 19</td><td>Pin 35</td><td>CH6</td><td>BCM 20</td><td>Pin 38</td></tr>
+  <tr><td>SH4</td><td>CH7</td><td>BCM 21</td><td>Pin 40</td><td>CH8</td><td>BCM 26</td><td>Pin 37</td></tr>
+</table>
+
+<h2>3.3 Push Buttons</h2>
+<p>
+4 &times; <strong>double momentary push-button units</strong> required (one per shutter,
+each unit provides independent UP and DOWN contacts).
+</p>
+
+<h3>Compatible Models</h3>
+<table>
+  <tr><th>Model</th><th>Reference</th><th>Notes</th></tr>
+  <tr><td>Schneider Electric Odace</td><td>S520207</td><td>&ldquo;Double poussoir pour volets-roulants&rdquo; &mdash; UP/DOWN arrows, standard Odace 68&nbsp;mm flush box</td></tr>
+  <tr><td>Legrand Dooxie</td><td>600122 (LM ref 90303603)</td><td>&ldquo;Bouton poussoir volet roulant alu&rdquo; &mdash; Dooxie range</td></tr>
+  <tr><td>LM Modern Noir</td><td>LM ref 86990486</td><td>&ldquo;Bouton poussoir volets roulants automatiques avec fl&egrave;ches&rdquo;</td></tr>
+</table>
+
+<h3>Electrical Specifications</h3>
+<table>
+  <tr><th>Attribute</th><th>Detail</th></tr>
+  <tr><td>Type</td><td>Double momentary push-button, Normally Open (NO) &mdash; 2 independent contacts per unit</td></tr>
+  <tr><td>Contact rating</td><td>Rated 10&nbsp;A / 230&nbsp;V AC (contacts work fine at 3.3&nbsp;V signal level)</td></tr>
+  <tr><td>Mounting</td><td>Wall box (68&nbsp;mm flush mount, standard European)</td></tr>
+  <tr><td>Signal level</td><td>3.3&nbsp;V / max 1&nbsp;mA (RPi GPIO limited current)</td></tr>
+  <tr><td>Cable</td><td>2-conductor signal cable (2&times;0.5&nbsp;mm&sup2;), routed separately from mains</td></tr>
+  <tr><td>Quantity</td><td>4 units = 8 contacts (4 pairs UP/DOWN)</td></tr>
+  <tr><td>External resistors</td><td>Not needed &mdash; RPi internal pull-up resistors used</td></tr>
+</table>
+
+<h3>Wiring</h3>
+<p>
+Both models wire identically. For each contact:
+</p>
+<ul>
+  <li><strong>Contact leg A</strong> &rarr; RPi GND (any GND pin: 6, 9, 14, 20, 25, 30, 34, or 39)</li>
+  <li><strong>Contact leg B</strong> &rarr; RPi GPIO input pin (see Section 4.2)</li>
+</ul>
+<p>
+Internal pull-up enabled by <code>button_daemon.py</code>: idle = HIGH (3.3&nbsp;V), pressed = LOW (0&nbsp;V).
+One shared GND rail for all 8 contacts is acceptable.
+</p>
+
+<!-- ================================================================
+     SECTION 4 — GPIO PIN ASSIGNMENT
+     ================================================================ -->
+<h1 class="pb">Section 4 &mdash; GPIO Pin Assignment</h1>
+
+<h2>4.1 Relay Output Pins (EXISTING &mdash; do not change)</h2>
+<p>BCM pins: <strong>5, 6, 13, 16, 19, 20, 21, 26</strong></p>
+
+<h2>4.2 Button Input Pins (PLANNED)</h2>
+<p>
+Internal pull-up enabled on each pin.<br/>
+Button wiring: one terminal to GPIO pin, other terminal to GND.<br/>
+<strong>Idle state:</strong> HIGH (3.3&nbsp;V, button open) &nbsp;&nbsp;
+<strong>Pressed state:</strong> LOW (0&nbsp;V, button closed).
+</p>
+
+<table>
+  <tr>
+    <th>Shutter</th><th>Direction</th><th>BCM</th><th>Header Pin</th><th>Pull-up</th>
+  </tr>
+  <tr><td>SH1</td><td>UP</td><td>4</td><td>7</td><td>Internal (RPi)</td></tr>
+  <tr><td>SH1</td><td>DOWN</td><td>17</td><td>11</td><td>Internal (RPi)</td></tr>
+  <tr><td>SH2</td><td>UP</td><td>27</td><td>13</td><td>Internal (RPi)</td></tr>
+  <tr><td>SH2</td><td>DOWN</td><td>22</td><td>15</td><td>Internal (RPi)</td></tr>
+  <tr><td>SH3</td><td>UP</td><td>23</td><td>16</td><td>Internal (RPi)</td></tr>
+  <tr><td>SH3</td><td>DOWN</td><td>24</td><td>18</td><td>Internal (RPi)</td></tr>
+  <tr><td>SH4</td><td>UP</td><td>25</td><td>22</td><td>Internal (RPi)</td></tr>
+  <tr><td>SH4</td><td>DOWN</td><td>12</td><td>32</td><td>Internal (RPi)</td></tr>
+</table>
+
+<h2>4.3 GND Connections</h2>
+<p>
+Use any available GND pin: <strong>6, 9, 14, 20, 25, 30, 34, or 39</strong>.<br/>
+One shared GND rail for all 8 buttons is acceptable (signal-level wiring only).
+</p>
+
+<h2>4.4 Remaining Free GPIO After Button Assignment</h2>
+<p>
+GPIO 2 (I2C SDA, Pin 3), GPIO 3 (I2C SCL, Pin 5), GPIO 7 (SPI CE1, Pin 26),
+GPIO 8 (SPI CE0, Pin 24), GPIO 9 (SPI MISO, Pin 21), GPIO 10 (SPI MOSI, Pin 19),
+GPIO 11 (SPI CLK, Pin 23), GPIO 14 (UART TX, Pin 8), GPIO 15 (UART RX, Pin 10),
+GPIO 18 (PWM0, Pin 12) &mdash; <strong>10 pins remain free</strong>.
+</p>
+
+<!-- ================================================================
+     SECTION 5 — SOFTWARE STACK
+     ================================================================ -->
+<h1 class="pb">Section 5 &mdash; Software Stack</h1>
+
+<table>
+  <tr>
+    <th>Component</th><th>Technology</th><th>Version</th><th>Role</th><th>Channel</th>
+  </tr>
+  <tr><td>Operating System</td><td>Raspberry Pi OS Bookworm</td><td>Debian 12</td><td>Base system</td><td>Both</td></tr>
+  <tr><td>GPIO driver</td><td>libgpiod</td><td>1.x / 2.x</td><td>Kernel GPIO interface</td><td>Both</td></tr>
+  <tr><td>GPIO CLI tools</td><td>gpioset, gpiodetect</td><td>1.x / 2.x</td><td>Relay control (used by shutter_control.sh)</td><td>Both</td></tr>
+  <tr><td>Relay controller</td><td>shutter_control.sh (Bash)</td><td>v1.0.0</td><td>Relay operations, interlock, state files</td><td>Both</td></tr>
+  <tr><td>Web server</td><td>shutter_web.py (Flask)</td><td>v1.0.0</td><td>REST API + HTML dashboard on port 8081</td><td>Web</td></tr>
+  <tr><td>GPIO Python bindings</td><td>python3-gpiod</td><td>1.x / 2.x</td><td>Button edge event monitoring (v1: select-based; v2: wait_edge_events)</td><td>Buttons</td></tr>
+  <tr><td>Button daemon</td><td>button_daemon.py (Python)</td><td>v1.1.0</td><td>Physical GPIO button monitor &mdash; event-driven, gpiod v1/v2 auto-detect</td><td>Buttons</td></tr>
+  <tr><td>Process manager</td><td>systemd</td><td>system</td><td>Service lifecycle, auto-start on boot</td><td>Both</td></tr>
+</table>
+
+<h3>Install Command</h3>
+<pre>sudo apt install gpiod python3-gpiod python3-flask</pre>
+
+<h2>5.1 Web Interface (shutter_web.py)</h2>
+<p>
+The web server runs permanently as a systemd service and is accessible from
+<strong>any device on the local Ethernet or Wi-Fi network</strong>:
+</p>
+<ul>
+  <li><strong>URL:</strong> <code>http://&lt;rpi-ip&gt;:8081</code></li>
+  <li><strong>Dashboard:</strong> dark-theme UI with 4 shutter cards, animated blind icons,
+      per-shutter ▲/■/▼ buttons, global All Up / All Stop / All Down, live state refresh every 3&nbsp;s</li>
+  <li><strong>REST API:</strong> full JSON API for automation, scripts, or Home Assistant integration</li>
+</ul>
+<table>
+  <tr><th>Endpoint</th><th>Description</th></tr>
+  <tr><td><code>GET  /api/status</code></td><td>All shutter states (JSON)</td></tr>
+  <tr><td><code>POST /api/shutter/{1-4}/up</code></td><td>Start moving up</td></tr>
+  <tr><td><code>POST /api/shutter/{1-4}/down</code></td><td>Start moving down</td></tr>
+  <tr><td><code>POST /api/shutter/{1-4}/stop</code></td><td>Stop immediately</td></tr>
+  <tr><td><code>POST /api/shutter/{1-4}/open?ms=25000</code></td><td>Timed open (N milliseconds)</td></tr>
+  <tr><td><code>POST /api/shutter/{1-4}/close?ms=25000</code></td><td>Timed close (N milliseconds)</td></tr>
+  <tr><td><code>POST /api/all/up</code></td><td>All shutters up</td></tr>
+  <tr><td><code>POST /api/all/down</code></td><td>All shutters down</td></tr>
+  <tr><td><code>POST /api/all/stop</code></td><td>Stop all shutters</td></tr>
+  <tr><td><code>POST /api/all/open?ms=25000</code></td><td>Timed open all</td></tr>
+  <tr><td><code>POST /api/all/close?ms=25000</code></td><td>Timed close all</td></tr>
+</table>
+
+<h2>5.2 Why python3-gpiod for Buttons?</h2>
+<ul>
+  <li><strong>Event-driven:</strong> kernel captures GPIO edges via hardware interrupt &mdash; zero missed presses</li>
+  <li><strong>Efficient:</strong> Python only processes the kernel event queue &mdash; GIL and GC are irrelevant for human-speed input</li>
+  <li><strong>No polling loop</strong> &mdash; zero CPU usage when idle, accurate press timing</li>
+  <li><strong>Consistent</strong> with libgpiod already used by <code>shutter_control.sh</code></li>
+  <li><strong>Bash is unsuitable:</strong> requires spawning a <code>gpioget</code> subprocess every 50&nbsp;ms &mdash; unreliable, high overhead, can miss short presses</li>
+</ul>
+
+<!-- ================================================================
+     SECTION 6 — BUTTON DAEMON ARCHITECTURE
+     ================================================================ -->
+<h1 class="pb">Section 6 &mdash; Button Daemon Architecture (button_daemon.py)</h1>
+
+<h2>6.1 Design Principles</h2>
+<ul>
+  <li>Event-driven via <code>python3-gpiod</code> edge monitoring (falling + rising edges)</li>
+  <li>Linux kernel captures button edges via hardware interrupt &mdash; microsecond precision</li>
+  <li>Python reads from kernel event queue &mdash; no missed presses, zero CPU when idle</li>
+  <li>Completely independent from web server &mdash; both call <code>shutter_control.sh</code></li>
+  <li>Per-shutter <code>flock</code> lock files prevent race conditions with web server</li>
+  <li>Auto-detects gpiod API version at startup &mdash; no manual configuration required</li>
+</ul>
+
+<h2>6.2 gpiod Version Compatibility</h2>
+<table>
+  <tr><th>Version</th><th>Event loop method</th><th>API used</th></tr>
+  <tr>
+    <td>v2.x (current)</td>
+    <td><code>request_lines()</code> + <code>wait_edge_events()</code></td>
+    <td><code>gpiod.LineSettings(edge_detection=Edge.BOTH, bias=Bias.PULL_UP)</code></td>
+  </tr>
+  <tr>
+    <td>v1.x (legacy)</td>
+    <td><code>get_line()</code> + <code>select.select()</code> on <code>event_get_fd()</code></td>
+    <td><code>LINE_REQ_EV_BOTH_EDGES</code> + <code>LINE_REQ_FLAG_BIAS_PULL_UP</code></td>
+  </tr>
+</table>
+<p>
+Version detected at startup via <code>gpiod.__version__</code>. Both paths use
+<code>time.monotonic()</code> for press duration measurement (avoids timestamp API differences).
+</p>
+
+<h2>6.3 Button Behaviour (Mode 1 &mdash; VR Push Button, inspired by X-4VR V2)</h2>
+
+<table>
+  <tr><th>Press type</th><th>Shutter state</th><th>Action</th></tr>
+  <tr><td>Short press UP (&lt; 3&nbsp;s)</td><td>stopped</td><td><code>shutter_control.sh up N</code></td></tr>
+  <tr><td>Short press UP (&lt; 3&nbsp;s)</td><td>moving up</td><td><code>shutter_control.sh stop N</code></td></tr>
+  <tr><td>Short press UP (&lt; 3&nbsp;s)</td><td>moving down</td><td><code>shutter_control.sh stop N</code></td></tr>
+  <tr><td>Short press DOWN (&lt; 3&nbsp;s)</td><td>stopped</td><td><code>shutter_control.sh down N</code></td></tr>
+  <tr><td>Short press DOWN (&lt; 3&nbsp;s)</td><td>moving down</td><td><code>shutter_control.sh stop N</code></td></tr>
+  <tr><td>Short press DOWN (&lt; 3&nbsp;s)</td><td>moving up</td><td><code>shutter_control.sh stop N</code></td></tr>
+  <tr><td>Long press any (&ge; 3&nbsp;s)</td><td>any</td><td><code>shutter_control.sh stop all</code></td></tr>
+</table>
+
+<div class="info">
+  Long press triggers on button <em>release</em> (after &ge;3&nbsp;s held).
+  User can abort by releasing early if they held for less than 3&nbsp;s.
+</div>
+
+<h2>6.4 Event Processing Flow</h2>
+<ol>
+  <li>Kernel detects <strong>falling edge</strong> (button press) &rarr; delivers event to Python via gpiod fd</li>
+  <li>Record press timestamp and button identity (GPIO pin number)</li>
+  <li>Continue monitoring for rising edge (button release) on same pin</li>
+  <li>Kernel detects <strong>rising edge</strong> &rarr; Python calculates <code>duration = release_time &minus; press_time</code></li>
+  <li>Apply debounce filter: if <code>duration &lt; 50&nbsp;ms</code> &rarr; discard (mechanical bounce / noise)</li>
+  <li>If <code>duration &lt; 3000&nbsp;ms</code> &rarr; short press logic (read state file, choose up/stop/down)</li>
+  <li>If <code>duration &ge; 3000&nbsp;ms</code> &rarr; long press logic (all stop)</li>
+  <li>Acquire per-shutter lock file (non-blocking &mdash; drop command if locked)</li>
+  <li><code>subprocess.run(["shutter_control.sh", action, shutter_number])</code></li>
+  <li>Release lock file</li>
+</ol>
+
+<h2>6.5 Concurrency and Locking</h2>
+<table>
+  <tr><th>Item</th><th>Detail</th></tr>
+  <tr><td>Lock files</td><td><code>/tmp/shutter_board/sh{N}.lock</code> (N = 0..4); sh0 = global (all commands)</td></tr>
+  <tr><td>button_daemon.py</td><td>Non-blocking <code>flock(LOCK_EX|LOCK_NB)</code> &mdash; drops command silently if busy</td></tr>
+  <tr><td>shutter_web.py</td><td>Blocking <code>flock()</code> with 6&nbsp;s timeout &mdash; waits, then proceeds</td></tr>
+  <tr><td>Lock held for</td><td>Duration of <code>shutter_control.sh</code> execution (~50&ndash;500&nbsp;ms typical)</td></tr>
+  <tr><td>All-commands lock</td><td>sh0.lock used by both processes for global (all-up/all-down/all-stop) operations</td></tr>
+</table>
+
+<div class="info">
+  <strong>Implemented:</strong> Both <code>shutter_web.py</code> and <code>button_daemon.py</code>
+  use <code>flock()</code> on the same lock files &mdash; cross-process mutex is fully operational.
+</div>
+
+<h2>6.6 Debounce Parameters</h2>
+<table>
+  <tr><th>Parameter</th><th>Value</th></tr>
+  <tr><td>Hardware bounce window</td><td>5&ndash;50&nbsp;ms (mechanical button typical)</td></tr>
+  <tr><td>Software debounce filter</td><td>Discard events with duration &lt; 50&nbsp;ms</td></tr>
+  <tr><td>Edge flood protection</td><td>Ignore additional edges on same pin within 50&nbsp;ms of previous event</td></tr>
+</table>
+
+<h2>6.7 Startup Sequence</h2>
+<ol>
+  <li>Verify <code>/usr/local/bin/shutter_control.sh</code> is accessible and executable</li>
+  <li>Detect GPIO chip via <code>gpiodetect</code> (prefers rp1-gpio chip on RPi&nbsp;5)</li>
+  <li>Detect gpiod API version via <code>gpiod.__version__</code> &rarr; select v1 or v2 event loop</li>
+  <li>Open 8 GPIO lines with <code>BIAS_PULL_UP</code> and <code>EDGE_BOTH</code> configuration</li>
+  <li>Log startup: chip, gpiod version, pins configured, daemon ready</li>
+  <li>Enter blocking event loop &mdash; zero CPU usage when idle</li>
+  <li>On SIGTERM or SIGINT: release all GPIO lines, flush log, exit cleanly</li>
+</ol>
+
+<h2>6.8 Logging</h2>
+<table>
+  <tr><th>Attribute</th><th>Detail</th></tr>
+  <tr><td>Log file</td><td><code>/tmp/shutter_board_buttons.log</code></td></tr>
+  <tr><td>Max size</td><td>1&nbsp;MB with rotation to <code>.old</code> file (same pattern as <code>shutter_control.sh</code>)</td></tr>
+  <tr><td>Log entries include</td><td>Timestamp, pin number, shutter number, direction, press duration, action taken, lock acquisition result</td></tr>
+</table>
+
+<!-- ================================================================
+     SECTION 7 — SAFETY DESIGN
+     ================================================================ -->
+<h1 class="pb">Section 7 &mdash; Safety Design</h1>
+
+<h2>7.1 Electrical Isolation</h2>
+<div class="warning">
+  Button wiring (3.3&nbsp;V / GND, signal level) is <strong>completely separate</strong>
+  from mains wiring (230&nbsp;V AC).<br/>
+  <strong>NEVER</strong> connect button terminals to the relay board mains-side screw terminals.<br/>
+  Route button cables in separate conduit or use clearly labelled cable.<br/>
+  If buttons are in the same wall box as mains: use a separate compartment or
+  earth-screened cable.
+</div>
+
+<h2>7.2 Software Interlock (existing, preserved)</h2>
+<p>
+The 0.5&nbsp;s motor direction-change delay is enforced inside <code>shutter_control.sh</code>.
+<code>button_daemon.py</code> <strong>NEVER</strong> calls GPIO directly &mdash; always calls
+<code>shutter_control.sh</code>. The interlock is therefore always active regardless of whether
+commands originate from buttons or web.
+</p>
+
+<h2>7.3 Race Condition Prevention</h2>
+<ul>
+  <li>Per-shutter lock files ensure only one command executes at a time per shutter.</li>
+  <li>If web server is commanding SH1 when a button is pressed for SH1: button command is
+      silently dropped (safe &mdash; shutter is already being controlled).</li>
+  <li>Different shutters can be commanded simultaneously &mdash; they are physically independent.</li>
+</ul>
+
+<h2>7.4 Long Press Threshold</h2>
+<p>
+3&nbsp;seconds minimum, triggers on release. Always maps to <strong>ALL STOP</strong> &mdash;
+safest possible global action. Prevents accidental global commands from short presses.
+</p>
+
+<h2>7.5 Boot Safety</h2>
+<ul>
+  <li>On RPi reboot: GPIO reconfigured fresh at daemon startup, relay daemons not running,
+      state files absent (treated as &ldquo;stopped&rdquo;).</li>
+  <li>Relays default to de-energised (OFF) at boot &mdash; shutters stay at last physical position.</li>
+  <li>No automatic shutter movement on boot.</li>
+  <li><code>button_daemon.py</code> starts after <code>shutter-web.service</code> via systemd ordering.</li>
+</ul>
+
+<h2>7.6 Simultaneous Button Presses</h2>
+<table>
+  <tr><th>Scenario</th><th>Result</th></tr>
+  <tr><td>Same shutter, both UP and DOWN pressed</td><td>Lock file drops the second command &mdash; safe</td></tr>
+  <tr><td>Different shutters pressed simultaneously</td><td>Fully independent, concurrent commands allowed</td></tr>
+</table>
+
+<!-- ================================================================
+     SECTION 8 — SYSTEMD SERVICES
+     ================================================================ -->
+<h1 class="pb">Section 8 &mdash; Systemd Services</h1>
+
+<h2>8.1 Existing: shutter-web.service</h2>
+<pre>[Unit]
+Description=Waveshare RPi Relay Board (B) — Roller Shutter Web Controller
+After=network.target
+
+[Service]
+Type=simple
+User=akaw
+WorkingDirectory=/home/akaw/waveshare-shutter
+ExecStart=/usr/bin/python3 shutter_web.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target</pre>
+<p>Listens on port <strong>8081</strong>.</p>
+
+<h2>8.2 Planned: shutter-buttons.service</h2>
+<pre>[Unit]
+Description=Roller Shutter Manual Button Controller
+After=network.target shutter-web.service
+Requires=shutter-web.service
+
+[Service]
+Type=simple
+User=akaw
+WorkingDirectory=/home/akaw/waveshare-shutter
+ExecStart=/usr/bin/python3 button_daemon.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target</pre>
+
+<!-- ================================================================
+     SECTION 9 — PROJECT FILE STRUCTURE
+     ================================================================ -->
+<h1 class="pb">Section 9 &mdash; Project File Structure</h1>
+
+<h2>9.1 Deployment on RPi 5 (<code>/home/akaw/waveshare-shutter/</code>)</h2>
+<table>
+  <tr><th>File</th><th>Status</th><th>Description</th></tr>
+  <tr><td><code>shutter_control.sh</code></td><td>EXISTING</td><td>Bash relay controller with interlock</td></tr>
+  <tr><td><code>shutter_web.py</code></td><td>EXISTING</td><td>Flask REST API + web dashboard</td></tr>
+  <tr><td><code>button_daemon.py</code></td><td>IMPLEMENTED</td><td>GPIO button monitor daemon (gpiod v1/v2, event-driven)</td></tr>
+  <tr><td><code>templates/index.html</code></td><td>EXISTING</td><td>Web dashboard UI</td></tr>
+  <tr><td><code>shutter-web.service</code></td><td>EXISTING</td><td>systemd unit &mdash; web server</td></tr>
+  <tr><td><code>shutter-buttons.service</code></td><td>IMPLEMENTED</td><td>systemd unit &mdash; button daemon</td></tr>
+</table>
+
+<h2>9.2 Runtime State (<code>/tmp/shutter_board/</code> &mdash; ephemeral, lost on reboot)</h2>
+<table>
+  <tr><th>File</th><th>Status</th><th>Description</th></tr>
+  <tr><td><code>sh1.state</code> &hellip; <code>sh4.state</code></td><td>EXISTING</td><td>Shutter direction states</td></tr>
+  <tr><td><code>sh0.lock</code></td><td>IMPLEMENTED</td><td>Global lock for all-commands (web and button daemon)</td></tr>
+  <tr><td><code>sh1.lock</code> &hellip; <code>sh4.lock</code></td><td>IMPLEMENTED</td><td>Per-shutter concurrency lock files</td></tr>
+</table>
+
+<h2>9.3 Log Files</h2>
+<table>
+  <tr><th>File</th><th>Status</th><th>Description</th></tr>
+  <tr><td><code>/tmp/shutter_board.log</code></td><td>EXISTING</td><td>Relay operations log</td></tr>
+  <tr><td><code>/tmp/shutter_board_buttons.log</code></td><td>PLANNED</td><td>Button events log</td></tr>
+</table>
+
+<p><strong>GitHub repository:</strong> <a href="https://github.com/larbi1/rpi-roller-shutter">https://github.com/larbi1/rpi-roller-shutter</a></p>
+
+<!-- ================================================================
+     SECTION 10 — IMPLEMENTATION CHECKLIST
+     ================================================================ -->
+<h1 class="pb">Section 10 &mdash; Implementation Checklist</h1>
+
+<h2>10.1 Planning Phase (COMPLETE)</h2>
+<table>
+  <tr><th>Task</th><th>Status</th></tr>
+  <tr><td>Define button behaviour and modes</td><td>&#10003; Done</td></tr>
+  <tr><td>Select GPIO pins for buttons</td><td>&#10003; Done</td></tr>
+  <tr><td>Design software architecture</td><td>&#10003; Done</td></tr>
+  <tr><td>Identify safety requirements</td><td>&#10003; Done</td></tr>
+  <tr><td>Write technical documentation</td><td>&#10003; Done</td></tr>
+</table>
+
+<h2>10.2 Hardware Phase (NEXT)</h2>
+<table>
+  <tr><th>Task</th><th>Status</th></tr>
+  <tr><td>Purchase 8 momentary NO push-buttons</td><td>&#9744; Pending</td></tr>
+  <tr><td>Purchase 2-conductor signal cable (2&times;0.5&nbsp;mm&sup2;)</td><td>&#9744; Pending</td></tr>
+  <tr><td>Wire buttons to RPi GPIO &mdash; verify with multimeter before connecting to Pi</td><td>&#9744; Pending</td></tr>
+  <tr><td>Physical installation in wall box or DIN rail enclosure</td><td>&#9744; Pending</td></tr>
+  <tr><td>Verify button cable routing is separated from mains wiring</td><td>&#9744; Pending</td></tr>
+</table>
+
+<h2>10.3 Software Phase (COMPLETE &mdash; pending on-hardware validation)</h2>
+<table>
+  <tr><th>Task</th><th>Status</th></tr>
+  <tr><td>Implement <code>button_daemon.py</code> (event loop, debounce, short/long press, locking, gpiod v1/v2)</td><td>&#10003; Done</td></tr>
+  <tr><td>Add flock lock file support to <code>shutter_web.py</code></td><td>&#10003; Done</td></tr>
+  <tr><td>Implement <code>shutter-buttons.service</code> unit file</td><td>&#10003; Done</td></tr>
+  <tr><td>Push v1.1.0 to GitHub</td><td>&#10003; Done</td></tr>
+  <tr><td>Unit test: debounce filter (&lt; 50&nbsp;ms events discarded)</td><td>&#9744; Pending (requires hardware)</td></tr>
+  <tr><td>Unit test: short press vs long press threshold at 3&nbsp;s boundary</td><td>&#9744; Pending (requires hardware)</td></tr>
+  <tr><td>Integration test: concurrent web + button commands (lock file prevents race)</td><td>&#9744; Pending (requires hardware)</td></tr>
+  <tr><td>Test long press ALL STOP from each of 8 buttons</td><td>&#9744; Pending (requires hardware)</td></tr>
+  <tr><td>Test direction reversal: UP button while moving down &rarr; stop</td><td>&#9744; Pending (requires hardware)</td></tr>
+  <tr><td>Deploy to RPi 5 and test with real shutters</td><td>&#9744; Pending (purchase buttons first)</td></tr>
+</table>
+
+</body>
+</html>
+"""
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    # 1. Write HTML
+    print(f"[1/4] Writing HTML to {HTML_PATH} ...")
+    with open(HTML_PATH, "w", encoding="utf-8") as f:
+        f.write(HTML)
+    print(f"      HTML written ({os.path.getsize(HTML_PATH):,} bytes)")
+
+    # 2. Convert to ODT with LibreOffice headless
+    print(f"[2/4] Running LibreOffice headless conversion ...")
+    cmd = [
+        "libreoffice",
+        "--headless",
+        "--convert-to", "odt",
+        HTML_PATH,
+        "--outdir", OUT_DIR,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    print("      stdout:", result.stdout.strip() or "(none)")
+    if result.stderr.strip():
+        print("      stderr:", result.stderr.strip())
+    if result.returncode != 0:
+        print(f"ERROR: libreoffice exited with code {result.returncode}", file=sys.stderr)
+        sys.exit(result.returncode)
+
+    # 3. Rename if necessary
+    print(f"[3/4] Checking output file ...")
+    # LibreOffice names it after the input stem: shutter_doc.odt
+    expected_raw = os.path.join(OUT_DIR, "shutter_doc.odt")
+    if os.path.exists(expected_raw) and expected_raw != FINAL_PATH:
+        os.rename(expected_raw, FINAL_PATH)
+        print(f"      Renamed shutter_doc.odt -> {FINAL_NAME}")
+    else:
+        # Maybe LO produced the final name already, or check glob
+        candidates = glob.glob(os.path.join(OUT_DIR, "*.odt"))
+        if candidates and FINAL_PATH not in candidates:
+            src = candidates[0]
+            os.rename(src, FINAL_PATH)
+            print(f"      Renamed {os.path.basename(src)} -> {FINAL_NAME}")
+        elif os.path.exists(FINAL_PATH):
+            print(f"      File already at correct path.")
+        else:
+            print(f"ERROR: Could not find any .odt file in {OUT_DIR}", file=sys.stderr)
+            print("       Directory contents:", os.listdir(OUT_DIR), file=sys.stderr)
+            sys.exit(1)
+
+    # 4. Verify and report
+    print(f"[4/4] Verifying output ...")
+    if os.path.exists(FINAL_PATH):
+        size = os.path.getsize(FINAL_PATH)
+        print(f"\n  Output file : {FINAL_PATH}")
+        print(f"  File size   : {size:,} bytes ({size / 1024:.1f} KB)")
+        print(f"\n  SUCCESS — {FINAL_NAME} is ready.")
+    else:
+        print(f"ERROR: {FINAL_PATH} does not exist after conversion!", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
